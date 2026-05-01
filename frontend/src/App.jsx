@@ -1,4 +1,5 @@
 import { Component, useEffect, useRef, useState } from "react";
+import { buildDependencyHealthRollup } from "./dependencyHealth";
 import { extractServiceDiagnosis } from "./diagnostics";
 
 const RIGHT_PANEL_SPLIT_STORAGE_KEY = "garage-admin-v2:right-panel-split";
@@ -2892,6 +2893,7 @@ export default function App() {
     : diagnosis?.detected
       ? diagnosis.likelyCause
       : "Review raw logs or run a health check for more context.";
+  const dependencyHealthRollup = buildDependencyHealthRollup(selectedServiceRecord, serviceItems, diagnosis);
   const extractedEventsEmptyMessage = !selectedService
     ? "Select a service to review extracted log events."
     : "No critical issue detected from the current logs. Review raw logs or run a health check for more context.";
@@ -3397,6 +3399,63 @@ export default function App() {
                   </div>
                 ))}
               </div>
+              {dependencyHealthRollup ? (
+                <div className="signal-dependency-section">
+                  <div>
+                    <span className="detail-label">Dependencies</span>
+                    <p className="service-relationship-copy">Declared dependency status from current service inventory and health metadata.</p>
+                  </div>
+                  <div className="signal-dependency-summary">
+                    <span className="status-badge status-unknown">
+                      {dependencyHealthRollup.declaredCount} dependenc{dependencyHealthRollup.declaredCount === 1 ? "y" : "ies"} declared
+                    </span>
+                    <span className="status-badge status-healthy">
+                      {dependencyHealthRollup.counts.healthy} healthy / running
+                    </span>
+                    <span className="status-badge status-warning">{dependencyHealthRollup.counts.warning} warning</span>
+                    <span className="status-badge status-failed">{dependencyHealthRollup.counts.failed} failed</span>
+                    <span className="status-badge status-unknown">{dependencyHealthRollup.counts.unknown} unknown</span>
+                  </div>
+                  <div className="relationship-chip-row">
+                    {dependencyHealthRollup.items.map((item) =>
+                      item.serviceId && item.hasInventoryService ? (
+                        <button
+                          key={item.key}
+                          type="button"
+                          className={`relationship-chip relationship-chip-button signal-dependency-chip ${
+                            item.diagnosisRelated ? "signal-dependency-chip-related" : ""
+                          }`}
+                          title={item.title}
+                          onClick={() => setSelectedService(item.serviceId)}
+                          disabled={item.serviceId === selectedService}
+                        >
+                          <span className="signal-dependency-chip-header">
+                            <span className="relationship-chip-value">{item.label}</span>
+                            <span className={`status-badge ${statusClassName(item.status)}`}>{formatStatusLabel(item.status)}</span>
+                          </span>
+                          {item.endpoint ? <span className="relationship-chip-meta">Endpoint: {item.endpoint}</span> : null}
+                          {item.confidence ? <span className="relationship-chip-meta">Confidence: {formatStatusLabel(item.confidence)}</span> : null}
+                          {item.diagnosisLabel ? <span className="signal-dependency-chip-note">{item.diagnosisLabel}</span> : null}
+                        </button>
+                      ) : (
+                        <span
+                          key={item.key}
+                          className={`relationship-chip signal-dependency-chip ${item.diagnosisRelated ? "signal-dependency-chip-related" : ""}`}
+                          title={item.title}
+                        >
+                          <span className="signal-dependency-chip-header">
+                            <span className="relationship-chip-value">{item.label}</span>
+                            <span className={`status-badge ${statusClassName(item.status)}`}>{formatStatusLabel(item.status)}</span>
+                          </span>
+                          {item.endpoint ? <span className="relationship-chip-meta">Endpoint: {item.endpoint}</span> : null}
+                          {item.confidence ? <span className="relationship-chip-meta">Confidence: {formatStatusLabel(item.confidence)}</span> : null}
+                          {item.diagnosisLabel ? <span className="signal-dependency-chip-note">{item.diagnosisLabel}</span> : null}
+                        </span>
+                      ),
+                    )}
+                  </div>
+                </div>
+              ) : null}
             </DisclosureSection>
           ) : null}
 

@@ -567,12 +567,14 @@ button {
 
 .service-relationship-section,
 .service-relationship-list,
+.signal-dependency-section,
 .diagnosis-related-actions {
   display: flex;
   flex-direction: column;
 }
 
-.service-relationship-section {
+.service-relationship-section,
+.signal-dependency-section {
   gap: 10px;
   margin-top: 12px;
   border-top: 1px solid var(--border-quiet);
@@ -644,6 +646,39 @@ button {
   color: var(--text-muted);
   font-size: 0.76rem;
   white-space: pre-wrap;
+}
+
+.signal-dependency-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.signal-dependency-chip {
+  min-width: min(100%, 240px);
+  flex: 1 1 240px;
+}
+
+.signal-dependency-chip-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.signal-dependency-chip-header .relationship-chip-value {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.signal-dependency-chip-related {
+  border-color: rgba(125, 183, 224, 0.38);
+  background: rgba(125, 183, 224, 0.08);
+}
+
+.signal-dependency-chip-note {
+  color: #a7d6ff;
+  font-size: 0.76rem;
 }
 
 .diagnosis-related-actions {
@@ -1603,6 +1638,14 @@ button {
 .status-offline {
   color: #ffb6b6;
   background: rgba(184, 65, 65, 0.18);
+}
+
+.status-warning,
+.status-degraded,
+.status-needs-setup,
+.status-pending-env-or-not-started {
+  color: #ffd98e;
+  background: rgba(246, 180, 64, 0.16);
 }
 
 .status-cancelled,

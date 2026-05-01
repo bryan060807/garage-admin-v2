@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 
+import { buildDependencyHealthRollup } from "../src/dependencyHealth.js";
 import { extractServiceDiagnosis, extractServiceLogEvents } from "../src/diagnostics.js";
 
 function buildServiceInventory() {
@@ -251,6 +252,34 @@ function buildGarageAdminContext(overrides = {}) {
     publicUrl: "",
     ...overrides,
   });
+}
+
+function patchService(services, serviceId, patch) {
+  return services.map((service) => {
+    if (service.name !== serviceId) {
+      return service;
+    }
+
+    return {
+      ...service,
+      ...patch,
+      inventory: patch.inventory ? { ...(service.inventory || {}), ...patch.inventory } : service.inventory,
+      health: patch.health ? { ...(service.health || {}), ...patch.health } : service.health,
+      runtime: patch.runtime ? { ...(service.runtime || {}), ...patch.runtime } : service.runtime,
+    };
+  });
+}
+
+function findService(services, serviceId) {
+  return services.find((service) => service.name === serviceId) || null;
+}
+
+function buildDependencyRollupInventory() {
+  return patchService(
+    patchService(buildServiceInventory(), "trackmaster-api", { status: "online" }),
+    "admin-proxy",
+    { status: "running" },
+  );
 }
 
 const cases = [
@@ -526,6 +555,98 @@ for (const testCase of cases) {
     detected: diagnosis.detected,
     primaryIssue: diagnosis.primaryIssue || "none",
     logEventCount: events.length,
+  });
+}
+
+const dependencyRollupCases = [
+  {
+    name: "dependency rollup marks running dependency as healthy",
+    services: buildDependencyRollupInventory(),
+    selectedService: "trackmaster-ui",
+    verify(rollup) {
+      assert.ok(rollup);
+      assert.equal(rollup.declaredCount, 1);
+      assert.equal(rollup.counts.healthy, 1);
+      assert.equal(rollup.counts.warning, 0);
+      assert.equal(rollup.counts.failed, 0);
+      assert.equal(rollup.counts.unknown, 0);
+      assert.equal(rollup.items[0].label, "TrackMaster API");
+      assert.equal(rollup.items[0].status, "running");
+      assert.ok(rollup.items[0].endpoint.includes("127.0.0.1:3004/api/health"));
+    },
+  },
+  {
+    name: "dependency rollup marks missing inventory dependency as unknown",
+    services: buildDependencyRollupInventory().filter((service) => service.name !== "trackmaster-api"),
+    selectedService: "trackmaster-ui",
+    verify(rollup) {
+      assert.ok(rollup);
+      assert.equal(rollup.declaredCount, 1);
+      assert.equal(rollup.counts.healthy, 0);
+      assert.equal(rollup.counts.warning, 0);
+      assert.equal(rollup.counts.failed, 0);
+      assert.equal(rollup.counts.unknown, 1);
+      assert.equal(rollup.items[0].label, "trackmaster-api");
+      assert.equal(rollup.items[0].status, "unknown");
+    },
+  },
+  {
+    name: "dependency rollup maps needs setup dependency to warning",
+    services: patchService(buildDependencyRollupInventory(), "admin-proxy", { status: "needs-setup" }),
+    selectedService: "garage-admin-v2",
+    verify(rollup) {
+      assert.ok(rollup);
+      assert.equal(rollup.declaredCount, 1);
+      assert.equal(rollup.counts.healthy, 0);
+      assert.equal(rollup.counts.warning, 1);
+      assert.equal(rollup.counts.failed, 0);
+      assert.equal(rollup.counts.unknown, 0);
+      assert.equal(rollup.items[0].status, "warning");
+    },
+  },
+  {
+    name: "dependency rollup stays quiet when no dependencies are declared",
+    services: buildDependencyRollupInventory(),
+    selectedService: "trackmaster-api",
+    verify(rollup) {
+      assert.equal(rollup, null);
+    },
+  },
+  {
+    name: "dependency rollup marks diagnosis-related dependency",
+    services: buildDependencyRollupInventory(),
+    selectedService: "trackmaster-ui",
+    logs: "2026-04-30T12:07:30Z Error: connect ECONNREFUSED 127.0.0.1:3004",
+    verify(rollup, diagnosis) {
+      assert.ok(rollup);
+      assert.equal(diagnosis.relatedServiceId, "trackmaster-api");
+      assert.equal(rollup.items[0].diagnosisRelated, true);
+      assert.equal(rollup.items[0].diagnosisLabel, "Related to current diagnosis");
+    },
+  },
+];
+
+for (const testCase of dependencyRollupCases) {
+  const services = testCase.services;
+  const service = findService(services, testCase.selectedService);
+  const diagnosis = testCase.logs
+    ? extractServiceDiagnosis(
+        buildTrackmasterUiContext({
+          services,
+          logs: testCase.logs,
+        }),
+      )
+    : null;
+  const rollup = buildDependencyHealthRollup(service, services, diagnosis);
+
+  testCase.verify(rollup, diagnosis);
+  results.push({
+    name: testCase.name,
+    dependencyDeclaredCount: rollup?.declaredCount ?? 0,
+    dependencyHealthyCount: rollup?.counts.healthy ?? 0,
+    dependencyWarningCount: rollup?.counts.warning ?? 0,
+    dependencyFailedCount: rollup?.counts.failed ?? 0,
+    dependencyUnknownCount: rollup?.counts.unknown ?? 0,
   });
 }
 
