@@ -87,6 +87,10 @@ function readServiceLocalPortCheckedAt(service) {
   return readText(service?.health?.checks?.localPort?.checkedAt);
 }
 
+function readServiceSourceName(service) {
+  return readText(service?.name, service?.id, service?.serviceName, service?.slug);
+}
+
 const DEPENDENCY_FRESHNESS_TIMESTAMP_PRIORITY = Object.freeze([
   {
     key: "lastCheckedAt",
@@ -189,33 +193,88 @@ function classifyDependencyStatus(status) {
 
 function resolveDependencyFreshnessTimestamp(service) {
   for (const candidate of DEPENDENCY_FRESHNESS_TIMESTAMP_PRIORITY) {
-    const timestamp = candidate.read(service);
+    const parsed = parseTimestampCandidate(candidate.key, candidate.read(service));
 
-    if (!timestamp) {
-      continue;
+    if (parsed) {
+      return parsed;
     }
-
-    const parsedAt = Date.parse(timestamp);
-
-    if (!Number.isFinite(parsedAt)) {
-      continue;
-    }
-
-    return {
-      source: candidate.key,
-      timestamp,
-      parsedAt,
-    };
   }
 
   return {
     source: "",
+    sourceType: "",
+    sourceName: "",
+    timestampField: "",
     timestamp: null,
     parsedAt: null,
   };
 }
 
-function parseTimestampCandidate(source, timestamp) {
+function inferTimestampSourceType(source) {
+  if (source.startsWith("response.")) {
+    return "response";
+  }
+
+  if (source.startsWith("sources.")) {
+    return "source";
+  }
+
+  if (source.startsWith("service.")) {
+    return "service";
+  }
+
+  return "";
+}
+
+function inferTimestampField(source, sourceType) {
+  const parts = String(source || "")
+    .split(".")
+    .filter(Boolean);
+
+  if (!parts.length) {
+    return "";
+  }
+
+  if (sourceType === "response") {
+    return parts.slice(1).join(".");
+  }
+
+  if (sourceType === "source") {
+    return parts.slice(2).join(".");
+  }
+
+  if (sourceType === "service") {
+    return parts.length > 2 ? parts.slice(2).join(".") : parts.slice(1).join(".");
+  }
+
+  return parts.slice(-1)[0];
+}
+
+function normalizeTimestampDescriptor(sourceDescriptor) {
+  if (typeof sourceDescriptor === "string") {
+    const sourceType = inferTimestampSourceType(sourceDescriptor);
+
+    return {
+      source: sourceDescriptor,
+      sourceType,
+      sourceName: "",
+      timestampField: inferTimestampField(sourceDescriptor, sourceType),
+    };
+  }
+
+  const descriptor = toPlainObject(sourceDescriptor);
+  const source = readText(descriptor.source, descriptor.key);
+  const sourceType = readText(descriptor.sourceType) || inferTimestampSourceType(source);
+
+  return {
+    source,
+    sourceType,
+    sourceName: readText(descriptor.sourceName),
+    timestampField: readText(descriptor.timestampField) || inferTimestampField(source, sourceType),
+  };
+}
+
+function parseTimestampCandidate(sourceDescriptor, timestamp) {
   const value = readText(timestamp);
 
   if (!value) {
@@ -228,8 +287,13 @@ function parseTimestampCandidate(source, timestamp) {
     return null;
   }
 
+  const descriptor = normalizeTimestampDescriptor(sourceDescriptor);
+
   return {
-    source,
+    source: descriptor.source,
+    sourceType: descriptor.sourceType,
+    sourceName: descriptor.sourceName,
+    timestampField: descriptor.timestampField,
     timestamp: value,
     parsedAt,
   };
@@ -251,6 +315,9 @@ function pickNewestTimestamp(candidates) {
   return (
     newest || {
       source: "",
+      sourceType: "",
+      sourceName: "",
+      timestampField: "",
       timestamp: null,
       parsedAt: null,
     }
@@ -261,8 +328,20 @@ function resolveNewestServiceTimestamp(services, priority) {
   const candidates = [];
 
   normalizeObjectCollection(services).forEach((service) => {
+    const sourceName = readServiceSourceName(service);
+
     priority.forEach((candidate) => {
-      const parsed = parseTimestampCandidate(candidate.key, candidate.read(service));
+      const timestampField = candidate.key.startsWith("service.") ? candidate.key.slice("service.".length) : candidate.key;
+      const source = sourceName ? `service.${sourceName}.${timestampField}` : candidate.key;
+      const parsed = parseTimestampCandidate(
+        {
+          source,
+          sourceType: "service",
+          sourceName,
+          timestampField,
+        },
+        candidate.read(service),
+      );
 
       if (parsed) {
         candidates.push(parsed);
@@ -281,7 +360,15 @@ function resolveNewestSourceTimestamp(sources) {
       return;
     }
 
-    const parsed = parseTimestampCandidate(`sources.${sourceName}.checkedAt`, value.checkedAt);
+    const parsed = parseTimestampCandidate(
+      {
+        source: `sources.${sourceName}.checkedAt`,
+        sourceType: "source",
+        sourceName,
+        timestampField: "checkedAt",
+      },
+      value.checkedAt,
+    );
 
     if (parsed) {
       candidates.push(parsed);
@@ -318,18 +405,48 @@ function classifyFreshnessTimestampInfo(timestampInfo, options = {}) {
     return {
       bucket: "unknown",
       ageMs: null,
+      ageLabel: "",
       timestamp: null,
       timestampSource: "",
+      timestampSourceType: "unknown",
+      timestampSourceName: "",
+      timestampField: "",
+      provenance: {
+        sourceType: "unknown",
+        sourceName: "",
+        timestampField: "",
+        timestamp: null,
+        ageLabel: "",
+        bucket: "unknown",
+      },
     };
   }
 
   const ageMs = Math.max(0, now - timestampInfo.parsedAt);
+  const bucket = resolveFreshnessBucket(ageMs);
+  const ageLabel = formatCompactAge(ageMs);
+  const source = readText(timestampInfo.source);
+  const sourceType = readText(timestampInfo.sourceType) || inferTimestampSourceType(source) || "unknown";
+  const sourceName = readText(timestampInfo.sourceName);
+  const timestampField = readText(timestampInfo.timestampField) || inferTimestampField(source, sourceType);
 
   return {
-    bucket: resolveFreshnessBucket(ageMs),
+    bucket,
     ageMs,
+    ageLabel,
     timestamp: timestampInfo.timestamp,
-    timestampSource: timestampInfo.source,
+    timestampSource: source,
+    timestampSourceType: sourceType,
+    timestampSourceName: sourceName,
+    timestampField,
+    provenance: {
+      sourceType,
+      sourceName,
+      timestampField,
+      timestamp: timestampInfo.timestamp,
+      ageLabel,
+      bucket,
+    },
   };
 }
 
@@ -344,7 +461,14 @@ export function classifyDependencyFreshness(service, options = {}) {
 }
 
 function resolveInventoryFreshnessTimestamp(payload, services) {
-  const responseCheckedAt = parseTimestampCandidate("response.checkedAt", payload?.checkedAt);
+  const responseCheckedAt = parseTimestampCandidate(
+    {
+      source: "response.checkedAt",
+      sourceType: "response",
+      timestampField: "checkedAt",
+    },
+    payload?.checkedAt,
+  );
 
   if (responseCheckedAt) {
     return responseCheckedAt;
@@ -398,6 +522,22 @@ function formatInventoryFreshnessLabel(bucket) {
   return bucket === "unknown" ? "Inventory freshness unknown" : `Inventory ${bucket}`;
 }
 
+function formatInventoryProvenanceText(freshness) {
+  if (freshness.timestampSourceType === "response" && freshness.timestampField) {
+    return `Based on response.${freshness.timestampField}`;
+  }
+
+  if (freshness.timestampSourceType === "source" && freshness.timestampSourceName && freshness.timestampField) {
+    return `Based on sources.${freshness.timestampSourceName}.${freshness.timestampField}`;
+  }
+
+  if (freshness.timestampSourceType === "service" && freshness.timestampField) {
+    return `Based on newest service ${freshness.timestampField}`;
+  }
+
+  return "Timestamp source unknown";
+}
+
 function getInventoryFreshnessHint(bucket) {
   if (bucket === "stale") {
     return "Refresh inventory before acting.";
@@ -417,16 +557,18 @@ export function classifyInventoryFreshness(payload, options = {}) {
 
 export function describeInventoryFreshness(payload, options = {}) {
   const freshness = classifyInventoryFreshness(payload, options);
-  const ageHint = Number.isFinite(freshness.ageMs) ? `checked ${formatCompactAge(freshness.ageMs)} ago` : "";
+  const ageHint = freshness.ageLabel ? `checked ${freshness.ageLabel} ago` : "";
   const hint = getInventoryFreshnessHint(freshness.bucket);
   const label = formatInventoryFreshnessLabel(freshness.bucket);
+  const provenanceText = formatInventoryProvenanceText(freshness);
 
   return {
     ...freshness,
     label,
     ageHint,
     hint,
-    title: [label, ageHint, freshness.timestamp ? `Timestamp: ${freshness.timestamp}` : "", freshness.timestampSource ? `Timestamp source: ${freshness.timestampSource}` : "", hint]
+    provenanceText,
+    title: [label, ageHint, freshness.timestamp ? `Timestamp: ${freshness.timestamp}` : "", freshness.timestampSource ? `Timestamp source: ${freshness.timestampSource}` : "", provenanceText, hint]
       .filter(Boolean)
       .join(" · "),
   };

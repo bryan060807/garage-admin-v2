@@ -3222,6 +3222,9 @@ export default function App() {
                   {serviceInventoryFreshness.ageHint ? (
                     <span className="signal-freshness-summary">{serviceInventoryFreshness.ageHint}</span>
                   ) : null}
+                  {serviceInventoryFreshness.provenanceText ? (
+                    <span className="service-inventory-provenance">{serviceInventoryFreshness.provenanceText}</span>
+                  ) : null}
                   {serviceInventoryFreshness.hint ? (
                     <span className="service-inventory-hint">{serviceInventoryFreshness.hint}</span>
                   ) : null}

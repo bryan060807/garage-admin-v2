@@ -649,8 +649,12 @@ const inventoryFreshnessCases = [
     verify(freshness, summary) {
       assert.equal(freshness.bucket, "fresh");
       assert.equal(freshness.timestampSource, "response.checkedAt");
+      assert.equal(freshness.timestampSourceType, "response");
+      assert.equal(freshness.timestampSourceName, "");
+      assert.equal(freshness.timestampField, "checkedAt");
       assert.equal(summary.label, "Inventory fresh");
       assert.equal(summary.ageHint, "checked 34s ago");
+      assert.equal(summary.provenanceText, "Based on response.checkedAt");
       assert.equal(summary.hint, "");
     },
   },
@@ -658,10 +662,10 @@ const inventoryFreshnessCases = [
     name: "inventory freshness uses newest source checkedAt before fresher service timestamps",
     payload: {
       sources: {
-        services: {
+        windowsPm2: {
           checkedAt: "2026-05-01T11:55:00Z",
         },
-        bridge: {
+        fedoraBridge: {
           checkedAt: "2026-05-01T11:53:30Z",
         },
       },
@@ -673,9 +677,13 @@ const inventoryFreshnessCases = [
     },
     verify(freshness, summary) {
       assert.equal(freshness.bucket, "aging");
-      assert.equal(freshness.timestampSource, "sources.services.checkedAt");
+      assert.equal(freshness.timestampSource, "sources.windowsPm2.checkedAt");
+      assert.equal(freshness.timestampSourceType, "source");
+      assert.equal(freshness.timestampSourceName, "windowsPm2");
+      assert.equal(freshness.timestampField, "checkedAt");
       assert.equal(summary.label, "Inventory aging");
       assert.equal(summary.ageHint, "checked 5m ago");
+      assert.equal(summary.provenanceText, "Based on sources.windowsPm2.checkedAt");
       assert.equal(summary.hint, "");
     },
   },
@@ -684,18 +692,48 @@ const inventoryFreshnessCases = [
     payload: {
       items: [
         {
+          name: "fedora-bridge",
           lastCheckedAt: "2026-05-01T11:45:00Z",
         },
         {
+          name: "trackmaster-api",
           lastCheckedAt: "2026-05-01T11:49:00Z",
         },
       ],
     },
     verify(freshness, summary) {
       assert.equal(freshness.bucket, "stale");
-      assert.equal(freshness.timestampSource, "service.lastCheckedAt");
+      assert.equal(freshness.timestampSource, "service.trackmaster-api.lastCheckedAt");
+      assert.equal(freshness.timestampSourceType, "service");
+      assert.equal(freshness.timestampSourceName, "trackmaster-api");
+      assert.equal(freshness.timestampField, "lastCheckedAt");
       assert.equal(summary.ageHint, "checked 11m ago");
+      assert.equal(summary.provenanceText, "Based on newest service lastCheckedAt");
       assert.equal(summary.hint, "Refresh inventory before acting.");
+    },
+  },
+  {
+    name: "inventory freshness falls back to newest service lastSeen when lastCheckedAt is unavailable",
+    payload: {
+      items: [
+        {
+          name: "admin-proxy",
+          lastSeen: "2026-05-01T11:56:15Z",
+        },
+        {
+          name: "trackmaster-ui",
+          lastSeen: "2026-05-01T11:54:30Z",
+        },
+      ],
+    },
+    verify(freshness, summary) {
+      assert.equal(freshness.bucket, "aging");
+      assert.equal(freshness.timestampSource, "service.admin-proxy.lastSeen");
+      assert.equal(freshness.timestampSourceType, "service");
+      assert.equal(freshness.timestampSourceName, "admin-proxy");
+      assert.equal(freshness.timestampField, "lastSeen");
+      assert.equal(summary.provenanceText, "Based on newest service lastSeen");
+      assert.equal(summary.hint, "");
     },
   },
   {
@@ -703,6 +741,7 @@ const inventoryFreshnessCases = [
     payload: {
       items: [
         {
+          name: "trackmaster-ui",
           runtime: {
             checkedAt: "2026-05-01T11:58:30Z",
           },
@@ -711,8 +750,12 @@ const inventoryFreshnessCases = [
     },
     verify(freshness, summary) {
       assert.equal(freshness.bucket, "fresh");
-      assert.equal(freshness.timestampSource, "service.checkedAt");
+      assert.equal(freshness.timestampSource, "service.trackmaster-ui.checkedAt");
+      assert.equal(freshness.timestampSourceType, "service");
+      assert.equal(freshness.timestampSourceName, "trackmaster-ui");
+      assert.equal(freshness.timestampField, "checkedAt");
       assert.equal(summary.label, "Inventory fresh");
+      assert.equal(summary.provenanceText, "Based on newest service checkedAt");
       assert.equal(summary.hint, "");
     },
   },
@@ -725,8 +768,12 @@ const inventoryFreshnessCases = [
       assert.equal(freshness.bucket, "unknown");
       assert.equal(freshness.timestamp, null);
       assert.equal(freshness.timestampSource, "");
+      assert.equal(freshness.timestampSourceType, "unknown");
+      assert.equal(freshness.timestampSourceName, "");
+      assert.equal(freshness.timestampField, "");
       assert.equal(summary.label, "Inventory freshness unknown");
       assert.equal(summary.ageHint, "");
+      assert.equal(summary.provenanceText, "Timestamp source unknown");
       assert.equal(summary.hint, "Inventory timestamp unavailable.");
     },
   },
@@ -741,6 +788,7 @@ for (const testCase of inventoryFreshnessCases) {
     name: testCase.name,
     inventoryFreshness: freshness.bucket,
     inventoryFreshnessTimestampSource: freshness.timestampSource || "none",
+    inventoryFreshnessProvenance: summary.provenanceText || "none",
     inventoryFreshnessHint: summary.hint || "none",
   });
 }

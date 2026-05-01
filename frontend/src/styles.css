@@ -675,6 +675,11 @@ button {
   font-size: 0.76rem;
 }
 
+.service-inventory-provenance {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+}
+
 .signal-dependency-chip {
   min-width: min(100%, 240px);
   flex: 1 1 240px;
