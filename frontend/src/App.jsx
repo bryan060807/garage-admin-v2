@@ -1,5 +1,5 @@
 import { Component, useEffect, useRef, useState } from "react";
-import { buildDependencyHealthRollup } from "./dependencyHealth";
+import { buildDependencyHealthRollup, describeInventoryFreshness } from "./dependencyHealth";
 import { extractServiceDiagnosis } from "./diagnostics";
 
 const RIGHT_PANEL_SPLIT_STORAGE_KEY = "garage-admin-v2:right-panel-split";
@@ -726,6 +726,18 @@ function normalizeObjectCollection(value) {
   return normalizeCollection(value).filter((item) => isPlainObject(item));
 }
 
+function normalizeInventorySources(value) {
+  const normalized = {};
+
+  Object.entries(toPlainObject(value)).forEach(([key, entry]) => {
+    if (isPlainObject(entry)) {
+      normalized[key] = entry;
+    }
+  });
+
+  return normalized;
+}
+
 function normalizeStringArray(value) {
   if (!Array.isArray(value)) {
     return [];
@@ -918,6 +930,13 @@ function readServiceNumber(...values) {
   }
 
   return null;
+}
+
+function normalizeServiceInventorySnapshot(payload) {
+  return {
+    checkedAt: readServiceString(payload?.checkedAt) || null,
+    sources: normalizeInventorySources(payload?.sources),
+  };
 }
 
 function normalizeServiceCapability(value) {
@@ -1882,6 +1901,7 @@ function isAuditEntryFresh(entry, now = Date.now()) {
 export default function App() {
   const [incidents, setIncidents] = useState([]);
   const [services, setServices] = useState([]);
+  const [serviceInventorySnapshot, setServiceInventorySnapshot] = useState(() => normalizeServiceInventorySnapshot(null));
   const [audit, setAudit] = useState([]);
   const [selectedService, setSelectedService] = useState(null);
   const [selectedIncidentId, setSelectedIncidentId] = useState(null);
@@ -2094,12 +2114,10 @@ export default function App() {
         const servicesData = await servicesRes.json();
         const auditData = await auditRes.json();
         const incidentItems = normalizeObjectCollection(incidentsData.items);
-        const serviceItems = normalizeServiceItems(servicesData.items || []);
+        applyServicePayload(servicesData);
 
         setIncidents(incidentItems);
         setAudit(normalizeObjectCollection(auditData.items));
-        setServices(serviceItems);
-        setSelectedService((current) => current || serviceItems[0]?.name || null);
       } catch (error) {
         setInitialError(error.message);
       } finally {
@@ -2112,6 +2130,7 @@ export default function App() {
 
   function applyServicePayload(payload) {
     const serviceItems = normalizeServiceItems(payload?.items || []);
+    setServiceInventorySnapshot(normalizeServiceInventorySnapshot(payload));
     setServices(serviceItems);
     setSelectedService((current) => {
       if (current && serviceItems.some((service) => service.name === current)) {
@@ -2162,6 +2181,10 @@ export default function App() {
   const chatMessages = normalizeObjectCollection(messages);
   const selectedIncident = incidentItems.find((incident) => incident.id === selectedIncidentId) || null;
   const selectedServiceRecord = serviceItems.find((service) => service.name === selectedService) || null;
+  const serviceInventoryFreshness = describeInventoryFreshness(serviceInventorySnapshot, {
+    services: serviceItems,
+    now: Date.now(),
+  });
 
   useEffect(() => {
     if (!selectedService) {
@@ -3189,7 +3212,22 @@ export default function App() {
 
         <section className="rail-section">
           <div className="section-heading">
-            <h2>Services</h2>
+            <div className="section-heading-copy">
+              <h2>Services</h2>
+              {!initialLoading ? (
+                <div className="service-inventory-freshness" title={serviceInventoryFreshness.title || serviceInventoryFreshness.label}>
+                  <span className={`signal-freshness-badge signal-freshness-badge-${serviceInventoryFreshness.bucket}`}>
+                    {serviceInventoryFreshness.label}
+                  </span>
+                  {serviceInventoryFreshness.ageHint ? (
+                    <span className="signal-freshness-summary">{serviceInventoryFreshness.ageHint}</span>
+                  ) : null}
+                  {serviceInventoryFreshness.hint ? (
+                    <span className="service-inventory-hint">{serviceInventoryFreshness.hint}</span>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
             <span className="count-pill">{serviceItems.length}</span>
           </div>
           <div className="list service-rail-list">

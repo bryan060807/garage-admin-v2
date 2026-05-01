@@ -162,6 +162,14 @@ button {
   flex-wrap: wrap;
 }
 
+.section-heading-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 180px;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .count-pill {
   display: inline-flex;
   align-items: center;
@@ -652,6 +660,19 @@ button {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.service-inventory-freshness {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+}
+
+.service-inventory-hint {
+  color: var(--text-muted);
+  font-size: 0.76rem;
 }
 
 .signal-dependency-chip {

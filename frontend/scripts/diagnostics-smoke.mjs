@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 
-import { buildDependencyHealthRollup, classifyDependencyFreshness } from "../src/dependencyHealth.js";
+import {
+  buildDependencyHealthRollup,
+  classifyDependencyFreshness,
+  classifyInventoryFreshness,
+  describeInventoryFreshness,
+} from "../src/dependencyHealth.js";
 import { extractServiceDiagnosis, extractServiceLogEvents } from "../src/diagnostics.js";
 
 const FRESHNESS_NOW = Date.parse("2026-05-01T12:00:00Z");
@@ -622,6 +627,121 @@ for (const testCase of freshnessCases) {
     name: testCase.name,
     freshness: freshness.bucket,
     freshnessTimestampSource: freshness.timestampSource || "none",
+  });
+}
+
+const inventoryFreshnessCases = [
+  {
+    name: "inventory freshness prefers top-level checkedAt within two minutes",
+    payload: {
+      checkedAt: "2026-05-01T11:59:26Z",
+      sources: {
+        services: {
+          checkedAt: "2026-05-01T11:59:50Z",
+        },
+      },
+      items: [
+        {
+          lastCheckedAt: "2026-05-01T11:59:55Z",
+        },
+      ],
+    },
+    verify(freshness, summary) {
+      assert.equal(freshness.bucket, "fresh");
+      assert.equal(freshness.timestampSource, "response.checkedAt");
+      assert.equal(summary.label, "Inventory fresh");
+      assert.equal(summary.ageHint, "checked 34s ago");
+      assert.equal(summary.hint, "");
+    },
+  },
+  {
+    name: "inventory freshness uses newest source checkedAt before fresher service timestamps",
+    payload: {
+      sources: {
+        services: {
+          checkedAt: "2026-05-01T11:55:00Z",
+        },
+        bridge: {
+          checkedAt: "2026-05-01T11:53:30Z",
+        },
+      },
+      items: [
+        {
+          lastCheckedAt: "2026-05-01T11:59:40Z",
+        },
+      ],
+    },
+    verify(freshness, summary) {
+      assert.equal(freshness.bucket, "aging");
+      assert.equal(freshness.timestampSource, "sources.services.checkedAt");
+      assert.equal(summary.label, "Inventory aging");
+      assert.equal(summary.ageHint, "checked 5m ago");
+      assert.equal(summary.hint, "");
+    },
+  },
+  {
+    name: "inventory freshness classifies stale service lastCheckedAt and shows quiet refresh guidance",
+    payload: {
+      items: [
+        {
+          lastCheckedAt: "2026-05-01T11:45:00Z",
+        },
+        {
+          lastCheckedAt: "2026-05-01T11:49:00Z",
+        },
+      ],
+    },
+    verify(freshness, summary) {
+      assert.equal(freshness.bucket, "stale");
+      assert.equal(freshness.timestampSource, "service.lastCheckedAt");
+      assert.equal(summary.ageHint, "checked 11m ago");
+      assert.equal(summary.hint, "Refresh inventory before acting.");
+    },
+  },
+  {
+    name: "inventory freshness falls back to equivalent service checkedAt metadata",
+    payload: {
+      items: [
+        {
+          runtime: {
+            checkedAt: "2026-05-01T11:58:30Z",
+          },
+        },
+      ],
+    },
+    verify(freshness, summary) {
+      assert.equal(freshness.bucket, "fresh");
+      assert.equal(freshness.timestampSource, "service.checkedAt");
+      assert.equal(summary.label, "Inventory fresh");
+      assert.equal(summary.hint, "");
+    },
+  },
+  {
+    name: "inventory freshness returns unknown when timestamps are missing",
+    payload: {
+      items: [{}],
+    },
+    verify(freshness, summary) {
+      assert.equal(freshness.bucket, "unknown");
+      assert.equal(freshness.timestamp, null);
+      assert.equal(freshness.timestampSource, "");
+      assert.equal(summary.label, "Inventory freshness unknown");
+      assert.equal(summary.ageHint, "");
+      assert.equal(summary.hint, "Inventory timestamp unavailable.");
+    },
+  },
+];
+
+for (const testCase of inventoryFreshnessCases) {
+  const freshness = classifyInventoryFreshness(testCase.payload, { now: FRESHNESS_NOW });
+  const summary = describeInventoryFreshness(testCase.payload, { now: FRESHNESS_NOW });
+
+  testCase.verify(freshness, summary);
+  results.push({
+    name: testCase.name,
+    inventoryFreshness: freshness.bucket,
+    inventoryFreshnessTimestampSource: freshness.timestampSource || "none",
+    inventoryFreshnessHint: summary.hint || "none",
   });
 }
 

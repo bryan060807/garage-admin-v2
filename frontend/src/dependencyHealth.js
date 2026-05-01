@@ -34,71 +34,124 @@ function normalizeStatus(value) {
   return text || "unknown";
 }
 
-export const DEPENDENCY_FRESHNESS_WINDOWS_MS = Object.freeze({
+export const FRESHNESS_WINDOWS_MS = Object.freeze({
   fresh: 2 * 60 * 1000,
   aging: 10 * 60 * 1000,
 });
 
+export const DEPENDENCY_FRESHNESS_WINDOWS_MS = FRESHNESS_WINDOWS_MS;
+
+function readServiceLastCheckedAt(service) {
+  return readText(
+    service?.lastCheckedAt,
+    service?.runtime?.lastCheckedAt,
+    service?.health?.lastCheckedAt,
+    service?.metadata?.lastCheckedAt,
+    service?.inventory?.lastCheckedAt,
+  );
+}
+
+function readServiceCheckedAt(service) {
+  return readText(
+    service?.checkedAt,
+    service?.runtime?.checkedAt,
+    service?.health?.checkedAt,
+    service?.metadata?.checkedAt,
+    service?.inventory?.checkedAt,
+  );
+}
+
+function readServiceLastSeen(service) {
+  return readText(service?.lastSeen, service?.metadata?.lastSeen, service?.inventory?.lastSeen);
+}
+
+function readServiceUpdatedAt(service) {
+  return readText(
+    service?.updatedAt,
+    service?.runtime?.updatedAt,
+    service?.health?.updatedAt,
+    service?.metadata?.updatedAt,
+    service?.inventory?.updatedAt,
+  );
+}
+
+function readServiceHealthCheckedAt(service) {
+  return readText(service?.healthCheckedAt, service?.health?.healthCheckedAt, service?.metadata?.healthCheckedAt);
+}
+
+function readServiceLocalHttpCheckedAt(service) {
+  return readText(service?.health?.checks?.localHttp?.checkedAt);
+}
+
+function readServiceLocalPortCheckedAt(service) {
+  return readText(service?.health?.checks?.localPort?.checkedAt);
+}
+
 const DEPENDENCY_FRESHNESS_TIMESTAMP_PRIORITY = Object.freeze([
   {
     key: "lastCheckedAt",
-    read(service) {
-      return readText(
-        service?.lastCheckedAt,
-        service?.runtime?.lastCheckedAt,
-        service?.health?.lastCheckedAt,
-        service?.metadata?.lastCheckedAt,
-        service?.inventory?.lastCheckedAt,
-      );
-    },
+    read: readServiceLastCheckedAt,
   },
   {
     key: "checkedAt",
-    read(service) {
-      return readText(
-        service?.checkedAt,
-        service?.runtime?.checkedAt,
-        service?.health?.checkedAt,
-        service?.metadata?.checkedAt,
-        service?.inventory?.checkedAt,
-      );
-    },
+    read: readServiceCheckedAt,
   },
   {
     key: "lastSeen",
-    read(service) {
-      return readText(service?.lastSeen, service?.metadata?.lastSeen, service?.inventory?.lastSeen);
-    },
+    read: readServiceLastSeen,
   },
   {
     key: "updatedAt",
-    read(service) {
-      return readText(
-        service?.updatedAt,
-        service?.runtime?.updatedAt,
-        service?.health?.updatedAt,
-        service?.metadata?.updatedAt,
-        service?.inventory?.updatedAt,
-      );
-    },
+    read: readServiceUpdatedAt,
   },
   {
     key: "healthCheckedAt",
-    read(service) {
-      return readText(service?.healthCheckedAt, service?.health?.healthCheckedAt, service?.metadata?.healthCheckedAt);
-    },
+    read: readServiceHealthCheckedAt,
   },
   {
     key: "localHttp.checkedAt",
-    read(service) {
-      return readText(service?.health?.checks?.localHttp?.checkedAt);
-    },
+    read: readServiceLocalHttpCheckedAt,
   },
   {
     key: "localPort.checkedAt",
-    read(service) {
-      return readText(service?.health?.checks?.localPort?.checkedAt);
-    },
+    read: readServiceLocalPortCheckedAt,
+  },
+]);
+
+const INVENTORY_FRESHNESS_SERVICE_LAST_CHECKED_AT_PRIORITY = Object.freeze([
+  {
+    key: "service.lastCheckedAt",
+    read: readServiceLastCheckedAt,
+  },
+]);
+
+const INVENTORY_FRESHNESS_SERVICE_LAST_SEEN_PRIORITY = Object.freeze([
+  {
+    key: "service.lastSeen",
+    read: readServiceLastSeen,
+  },
+]);
+
+const INVENTORY_FRESHNESS_SERVICE_FALLBACK_PRIORITY = Object.freeze([
+  {
+    key: "service.checkedAt",
+    read: readServiceCheckedAt,
+  },
+  {
+    key: "service.updatedAt",
+    read: readServiceUpdatedAt,
+  },
+  {
+    key: "service.healthCheckedAt",
+    read: readServiceHealthCheckedAt,
+  },
+  {
+    key: "service.localHttp.checkedAt",
+    read: readServiceLocalHttpCheckedAt,
+  },
+  {
+    key: "service.localPort.checkedAt",
+    read: readServiceLocalPortCheckedAt,
   },
 ]);
 
@@ -162,18 +215,108 @@ function resolveDependencyFreshnessTimestamp(service) {
   };
 }
 
+function parseTimestampCandidate(source, timestamp) {
+  const value = readText(timestamp);
+
+  if (!value) {
+    return null;
+  }
+
+  const parsedAt = Date.parse(value);
+
+  if (!Number.isFinite(parsedAt)) {
+    return null;
+  }
+
+  return {
+    source,
+    timestamp: value,
+    parsedAt,
+  };
+}
+
+function pickNewestTimestamp(candidates) {
+  let newest = null;
+
+  normalizeCollection(candidates).forEach((candidate) => {
+    if (!Number.isFinite(candidate?.parsedAt)) {
+      return;
+    }
+
+    if (!newest || candidate.parsedAt > newest.parsedAt) {
+      newest = candidate;
+    }
+  });
+
+  return (
+    newest || {
+      source: "",
+      timestamp: null,
+      parsedAt: null,
+    }
+  );
+}
+
+function resolveNewestServiceTimestamp(services, priority) {
+  const candidates = [];
+
+  normalizeObjectCollection(services).forEach((service) => {
+    priority.forEach((candidate) => {
+      const parsed = parseTimestampCandidate(candidate.key, candidate.read(service));
+
+      if (parsed) {
+        candidates.push(parsed);
+      }
+    });
+  });
+
+  return pickNewestTimestamp(candidates);
+}
+
+function resolveNewestSourceTimestamp(sources) {
+  const candidates = [];
+
+  Object.entries(toPlainObject(sources)).forEach(([sourceName, value]) => {
+    if (!isPlainObject(value)) {
+      return;
+    }
+
+    const parsed = parseTimestampCandidate(`sources.${sourceName}.checkedAt`, value.checkedAt);
+
+    if (parsed) {
+      candidates.push(parsed);
+    }
+  });
+
+  return pickNewestTimestamp(candidates);
+}
+
 function formatFreshnessLabel(bucket) {
   return bucket === "unknown" ? "unknown freshness" : bucket;
 }
 
-export function classifyDependencyFreshness(service, options = {}) {
-  const now = Number.isFinite(options.now) ? options.now : Date.now();
-  const timestampInfo = resolveDependencyFreshnessTimestamp(service);
+function resolveFreshnessBucket(ageMs) {
+  if (!Number.isFinite(ageMs)) {
+    return "unknown";
+  }
 
-  if (!Number.isFinite(timestampInfo.parsedAt)) {
+  if (ageMs <= FRESHNESS_WINDOWS_MS.fresh) {
+    return "fresh";
+  }
+
+  if (ageMs <= FRESHNESS_WINDOWS_MS.aging) {
+    return "aging";
+  }
+
+  return "stale";
+}
+
+function classifyFreshnessTimestampInfo(timestampInfo, options = {}) {
+  const now = Number.isFinite(options.now) ? options.now : Date.now();
+
+  if (!Number.isFinite(timestampInfo?.parsedAt)) {
     return {
       bucket: "unknown",
-      label: formatFreshnessLabel("unknown"),
       ageMs: null,
       timestamp: null,
       timestampSource: "",
@@ -181,19 +324,111 @@ export function classifyDependencyFreshness(service, options = {}) {
   }
 
   const ageMs = Math.max(0, now - timestampInfo.parsedAt);
-  const bucket =
-    ageMs <= DEPENDENCY_FRESHNESS_WINDOWS_MS.fresh
-      ? "fresh"
-      : ageMs <= DEPENDENCY_FRESHNESS_WINDOWS_MS.aging
-        ? "aging"
-        : "stale";
 
   return {
-    bucket,
-    label: formatFreshnessLabel(bucket),
+    bucket: resolveFreshnessBucket(ageMs),
     ageMs,
     timestamp: timestampInfo.timestamp,
     timestampSource: timestampInfo.source,
+  };
+}
+
+export function classifyDependencyFreshness(service, options = {}) {
+  const timestampInfo = resolveDependencyFreshnessTimestamp(service);
+  const freshness = classifyFreshnessTimestampInfo(timestampInfo, options);
+
+  return {
+    ...freshness,
+    label: formatFreshnessLabel(freshness.bucket),
+  };
+}
+
+function resolveInventoryFreshnessTimestamp(payload, services) {
+  const responseCheckedAt = parseTimestampCandidate("response.checkedAt", payload?.checkedAt);
+
+  if (responseCheckedAt) {
+    return responseCheckedAt;
+  }
+
+  const sourceCheckedAt = resolveNewestSourceTimestamp(payload?.sources);
+
+  if (Number.isFinite(sourceCheckedAt.parsedAt)) {
+    return sourceCheckedAt;
+  }
+
+  const lastCheckedAt = resolveNewestServiceTimestamp(services, INVENTORY_FRESHNESS_SERVICE_LAST_CHECKED_AT_PRIORITY);
+
+  if (Number.isFinite(lastCheckedAt.parsedAt)) {
+    return lastCheckedAt;
+  }
+
+  const lastSeen = resolveNewestServiceTimestamp(services, INVENTORY_FRESHNESS_SERVICE_LAST_SEEN_PRIORITY);
+
+  if (Number.isFinite(lastSeen.parsedAt)) {
+    return lastSeen;
+  }
+
+  return resolveNewestServiceTimestamp(services, INVENTORY_FRESHNESS_SERVICE_FALLBACK_PRIORITY);
+}
+
+function formatCompactAge(ageMs) {
+  const totalSeconds = Math.max(0, Math.round(ageMs / 1000));
+
+  if (totalSeconds < 60) {
+    return `${totalSeconds}s`;
+  }
+
+  const totalMinutes = Math.round(ageMs / (60 * 1000));
+
+  if (totalMinutes < 60) {
+    return `${totalMinutes}m`;
+  }
+
+  const totalHours = Math.round(ageMs / (60 * 60 * 1000));
+
+  if (totalHours < 24) {
+    return `${totalHours}h`;
+  }
+
+  const totalDays = Math.round(ageMs / (24 * 60 * 60 * 1000));
+  return `${totalDays}d`;
+}
+
+function formatInventoryFreshnessLabel(bucket) {
+  return bucket === "unknown" ? "Inventory freshness unknown" : `Inventory ${bucket}`;
+}
+
+function getInventoryFreshnessHint(bucket) {
+  if (bucket === "stale") {
+    return "Refresh inventory before acting.";
+  }
+
+  if (bucket === "unknown") {
+    return "Inventory timestamp unavailable.";
+  }
+
+  return "";
+}
+
+export function classifyInventoryFreshness(payload, options = {}) {
+  const services = Array.isArray(options.services) ? options.services : payload?.items;
+  return classifyFreshnessTimestampInfo(resolveInventoryFreshnessTimestamp(payload, services), options);
+}
+
+export function describeInventoryFreshness(payload, options = {}) {
+  const freshness = classifyInventoryFreshness(payload, options);
+  const ageHint = Number.isFinite(freshness.ageMs) ? `checked ${formatCompactAge(freshness.ageMs)} ago` : "";
+  const hint = getInventoryFreshnessHint(freshness.bucket);
+  const label = formatInventoryFreshnessLabel(freshness.bucket);
+
+  return {
+    ...freshness,
+    label,
+    ageHint,
+    hint,
+    title: [label, ageHint, freshness.timestamp ? `Timestamp: ${freshness.timestamp}` : "", freshness.timestampSource ? `Timestamp source: ${freshness.timestampSource}` : "", hint]
+      .filter(Boolean)
+      .join(" · "),
   };
 }
 
