@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 
-import { buildDependencyHealthRollup } from "../src/dependencyHealth.js";
+import { buildDependencyHealthRollup, classifyDependencyFreshness } from "../src/dependencyHealth.js";
 import { extractServiceDiagnosis, extractServiceLogEvents } from "../src/diagnostics.js";
+
+const FRESHNESS_NOW = Date.parse("2026-05-01T12:00:00Z");
 
 function buildServiceInventory() {
   return [
@@ -276,9 +278,19 @@ function findService(services, serviceId) {
 
 function buildDependencyRollupInventory() {
   return patchService(
-    patchService(buildServiceInventory(), "trackmaster-api", { status: "online" }),
+    patchService(buildServiceInventory(), "trackmaster-api", {
+      status: "online",
+      runtime: {
+        checkedAt: "2026-05-01T11:59:30Z",
+      },
+    }),
     "admin-proxy",
-    { status: "running" },
+    {
+      status: "running",
+      runtime: {
+        checkedAt: "2026-05-01T11:58:45Z",
+      },
+    },
   );
 }
 
@@ -558,6 +570,61 @@ for (const testCase of cases) {
   });
 }
 
+const freshnessCases = [
+  {
+    name: "dependency freshness classifies lastCheckedAt within two minutes as fresh",
+    service: {
+      lastCheckedAt: "2026-05-01T11:58:45Z",
+    },
+    verify(freshness) {
+      assert.equal(freshness.bucket, "fresh");
+      assert.equal(freshness.timestampSource, "lastCheckedAt");
+    },
+  },
+  {
+    name: "dependency freshness classifies lastSeen within ten minutes as aging",
+    service: {
+      lastSeen: "2026-05-01T11:53:00Z",
+    },
+    verify(freshness) {
+      assert.equal(freshness.bucket, "aging");
+      assert.equal(freshness.timestampSource, "lastSeen");
+    },
+  },
+  {
+    name: "dependency freshness classifies older than ten minutes as stale",
+    service: {
+      runtime: {
+        checkedAt: "2026-05-01T11:49:00Z",
+      },
+    },
+    verify(freshness) {
+      assert.equal(freshness.bucket, "stale");
+      assert.equal(freshness.timestampSource, "checkedAt");
+    },
+  },
+  {
+    name: "dependency freshness returns unknown when no timestamp is available",
+    service: {},
+    verify(freshness) {
+      assert.equal(freshness.bucket, "unknown");
+      assert.equal(freshness.timestamp, null);
+      assert.equal(freshness.timestampSource, "");
+    },
+  },
+];
+
+for (const testCase of freshnessCases) {
+  const freshness = classifyDependencyFreshness(testCase.service, { now: FRESHNESS_NOW });
+
+  testCase.verify(freshness);
+  results.push({
+    name: testCase.name,
+    freshness: freshness.bucket,
+    freshnessTimestampSource: freshness.timestampSource || "none",
+  });
+}
+
 const dependencyRollupCases = [
   {
     name: "dependency rollup marks running dependency as healthy",
@@ -624,6 +691,24 @@ const dependencyRollupCases = [
       assert.equal(rollup.items[0].diagnosisLabel, "Related to current diagnosis");
     },
   },
+  {
+    name: "dependency rollup shows stale freshness hint for diagnosis-related dependency",
+    services: patchService(buildDependencyRollupInventory(), "trackmaster-api", {
+      runtime: {
+        checkedAt: "2026-05-01T11:45:00Z",
+      },
+    }),
+    selectedService: "trackmaster-ui",
+    logs: "2026-04-30T12:07:30Z Error: connect ECONNREFUSED 127.0.0.1:3004",
+    verify(rollup, diagnosis) {
+      assert.ok(rollup);
+      assert.equal(diagnosis.relatedServiceId, "trackmaster-api");
+      assert.equal(rollup.freshnessSummary, "1 stale");
+      assert.equal(rollup.items[0].diagnosisRelated, true);
+      assert.equal(rollup.items[0].freshness, "stale");
+      assert.equal(rollup.items[0].diagnosisFreshnessLabel, "Status may be stale. Refresh service inventory before acting.");
+    },
+  },
 ];
 
 for (const testCase of dependencyRollupCases) {
@@ -637,7 +722,7 @@ for (const testCase of dependencyRollupCases) {
         }),
       )
     : null;
-  const rollup = buildDependencyHealthRollup(service, services, diagnosis);
+  const rollup = buildDependencyHealthRollup(service, services, diagnosis, { now: FRESHNESS_NOW });
 
   testCase.verify(rollup, diagnosis);
   results.push({
@@ -647,6 +732,7 @@ for (const testCase of dependencyRollupCases) {
     dependencyWarningCount: rollup?.counts.warning ?? 0,
     dependencyFailedCount: rollup?.counts.failed ?? 0,
     dependencyUnknownCount: rollup?.counts.unknown ?? 0,
+    dependencyFreshnessSummary: rollup?.freshnessSummary || "none",
   });
 }
 

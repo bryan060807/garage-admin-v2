@@ -34,6 +34,74 @@ function normalizeStatus(value) {
   return text || "unknown";
 }
 
+export const DEPENDENCY_FRESHNESS_WINDOWS_MS = Object.freeze({
+  fresh: 2 * 60 * 1000,
+  aging: 10 * 60 * 1000,
+});
+
+const DEPENDENCY_FRESHNESS_TIMESTAMP_PRIORITY = Object.freeze([
+  {
+    key: "lastCheckedAt",
+    read(service) {
+      return readText(
+        service?.lastCheckedAt,
+        service?.runtime?.lastCheckedAt,
+        service?.health?.lastCheckedAt,
+        service?.metadata?.lastCheckedAt,
+        service?.inventory?.lastCheckedAt,
+      );
+    },
+  },
+  {
+    key: "checkedAt",
+    read(service) {
+      return readText(
+        service?.checkedAt,
+        service?.runtime?.checkedAt,
+        service?.health?.checkedAt,
+        service?.metadata?.checkedAt,
+        service?.inventory?.checkedAt,
+      );
+    },
+  },
+  {
+    key: "lastSeen",
+    read(service) {
+      return readText(service?.lastSeen, service?.metadata?.lastSeen, service?.inventory?.lastSeen);
+    },
+  },
+  {
+    key: "updatedAt",
+    read(service) {
+      return readText(
+        service?.updatedAt,
+        service?.runtime?.updatedAt,
+        service?.health?.updatedAt,
+        service?.metadata?.updatedAt,
+        service?.inventory?.updatedAt,
+      );
+    },
+  },
+  {
+    key: "healthCheckedAt",
+    read(service) {
+      return readText(service?.healthCheckedAt, service?.health?.healthCheckedAt, service?.metadata?.healthCheckedAt);
+    },
+  },
+  {
+    key: "localHttp.checkedAt",
+    read(service) {
+      return readText(service?.health?.checks?.localHttp?.checkedAt);
+    },
+  },
+  {
+    key: "localPort.checkedAt",
+    read(service) {
+      return readText(service?.health?.checks?.localPort?.checkedAt);
+    },
+  },
+]);
+
 function classifyDependencyStatus(status) {
   if (/^(running|online|healthy|ok|ready|supported|completed)$/.test(status)) {
     return {
@@ -63,6 +131,69 @@ function classifyDependencyStatus(status) {
     bucket: "unknown",
     label: "unknown",
     rawStatus: status,
+  };
+}
+
+function resolveDependencyFreshnessTimestamp(service) {
+  for (const candidate of DEPENDENCY_FRESHNESS_TIMESTAMP_PRIORITY) {
+    const timestamp = candidate.read(service);
+
+    if (!timestamp) {
+      continue;
+    }
+
+    const parsedAt = Date.parse(timestamp);
+
+    if (!Number.isFinite(parsedAt)) {
+      continue;
+    }
+
+    return {
+      source: candidate.key,
+      timestamp,
+      parsedAt,
+    };
+  }
+
+  return {
+    source: "",
+    timestamp: null,
+    parsedAt: null,
+  };
+}
+
+function formatFreshnessLabel(bucket) {
+  return bucket === "unknown" ? "unknown freshness" : bucket;
+}
+
+export function classifyDependencyFreshness(service, options = {}) {
+  const now = Number.isFinite(options.now) ? options.now : Date.now();
+  const timestampInfo = resolveDependencyFreshnessTimestamp(service);
+
+  if (!Number.isFinite(timestampInfo.parsedAt)) {
+    return {
+      bucket: "unknown",
+      label: formatFreshnessLabel("unknown"),
+      ageMs: null,
+      timestamp: null,
+      timestampSource: "",
+    };
+  }
+
+  const ageMs = Math.max(0, now - timestampInfo.parsedAt);
+  const bucket =
+    ageMs <= DEPENDENCY_FRESHNESS_WINDOWS_MS.fresh
+      ? "fresh"
+      : ageMs <= DEPENDENCY_FRESHNESS_WINDOWS_MS.aging
+        ? "aging"
+        : "stale";
+
+  return {
+    bucket,
+    label: formatFreshnessLabel(bucket),
+    ageMs,
+    timestamp: timestampInfo.timestamp,
+    timestampSource: timestampInfo.source,
   };
 }
 
@@ -132,20 +263,51 @@ function buildServiceIndex(services) {
   return index;
 }
 
-function buildDependencyTitle(label, statusInfo, endpoint, confidence, diagnosisLabel) {
+function buildFreshnessSummary(counts, declaredCount) {
+  if (!declaredCount) {
+    return "unknown";
+  }
+
+  if (counts.stale > 0) {
+    return `${counts.stale} stale`;
+  }
+
+  if (counts.aging > 0) {
+    return `${counts.aging} aging`;
+  }
+
+  if (counts.unknown === declaredCount) {
+    return "unknown";
+  }
+
+  if (counts.unknown > 0) {
+    return `${counts.unknown} unknown`;
+  }
+
+  if (counts.fresh === declaredCount) {
+    return "all fresh";
+  }
+
+  return "unknown";
+}
+
+function buildDependencyTitle(label, statusInfo, freshnessInfo, endpoint, confidence, diagnosisNotes) {
   return [
     label,
     `Status: ${statusInfo.label}`,
+    freshnessInfo.bucket === "unknown" ? "Freshness: unknown" : `Freshness: ${freshnessInfo.label}`,
+    freshnessInfo.timestamp ? `Timestamp: ${freshnessInfo.timestamp}` : "",
+    freshnessInfo.timestampSource ? `Timestamp source: ${freshnessInfo.timestampSource}` : "",
     statusInfo.rawStatus && statusInfo.rawStatus !== statusInfo.label ? `Inventory status: ${statusInfo.rawStatus}` : "",
     endpoint ? `Endpoint: ${endpoint}` : "",
     confidence ? `Confidence: ${confidence}` : "",
-    diagnosisLabel,
+    ...normalizeCollection(diagnosisNotes),
   ]
     .filter(Boolean)
     .join(" · ");
 }
 
-export function buildDependencyHealthRollup(service, services, diagnosis = null) {
+export function buildDependencyHealthRollup(service, services, diagnosis = null, options = {}) {
   const dependencies = normalizeObjectCollection(service?.dependencies).filter((dependency) =>
     Boolean(readText(dependency?.serviceId, dependency?.endpoint, dependency?.path)),
   );
@@ -162,11 +324,18 @@ export function buildDependencyHealthRollup(service, services, diagnosis = null)
     failed: 0,
     unknown: 0,
   };
+  const freshnessCounts = {
+    fresh: 0,
+    aging: 0,
+    stale: 0,
+    unknown: 0,
+  };
 
   const items = dependencies.map((dependency, index) => {
     const serviceId = readText(dependency.serviceId);
     const targetService = serviceId ? serviceIndex.get(serviceId.toLowerCase()) || null : null;
     const statusInfo = targetService ? getServiceDependencyStatus(targetService) : classifyDependencyStatus("unknown");
+    const freshnessInfo = targetService ? classifyDependencyFreshness(targetService, options) : classifyDependencyFreshness(null, options);
     const label = readText(
       dependency.displayName,
       dependency.name,
@@ -188,13 +357,17 @@ export function buildDependencyHealthRollup(service, services, diagnosis = null)
     );
     const confidence = readText(dependency.confidence);
     const diagnosisRelated = Boolean(diagnosisRelatedServiceId && serviceId && diagnosisRelatedServiceId === serviceId.toLowerCase());
-    const diagnosisLabel = diagnosisRelated
-      ? statusInfo.bucket === "unknown"
-        ? "Upstream status unknown"
-        : "Related to current diagnosis"
+    const diagnosisLabel = diagnosisRelated ? (statusInfo.bucket === "unknown" ? "Upstream status unknown" : "Related to current diagnosis") : "";
+    const diagnosisFreshnessLabel = diagnosisRelated
+      ? freshnessInfo.bucket === "stale"
+        ? "Status may be stale. Refresh service inventory before acting."
+        : freshnessInfo.bucket === "unknown"
+          ? "Dependency status age unknown."
+          : ""
       : "";
 
     counts[statusInfo.bucket] += 1;
+    freshnessCounts[freshnessInfo.bucket] += 1;
 
     return {
       key: `${serviceId || label}-${endpoint || dependency.path || index}`.toLowerCase(),
@@ -206,15 +379,25 @@ export function buildDependencyHealthRollup(service, services, diagnosis = null)
       status: statusInfo.label,
       statusBucket: statusInfo.bucket,
       rawStatus: statusInfo.rawStatus,
+      freshness: freshnessInfo.bucket,
+      freshnessLabel: freshnessInfo.label,
+      freshnessTimestamp: freshnessInfo.timestamp,
+      freshnessTimestampSource: freshnessInfo.timestampSource,
       diagnosisRelated,
       diagnosisLabel,
-      title: buildDependencyTitle(label, statusInfo, endpoint, confidence, diagnosisLabel),
+      diagnosisFreshnessLabel,
+      title: buildDependencyTitle(label, statusInfo, freshnessInfo, endpoint, confidence, [
+        diagnosisLabel,
+        diagnosisFreshnessLabel,
+      ]),
     };
   });
 
   return {
     declaredCount: items.length,
     counts,
+    freshnessCounts,
+    freshnessSummary: buildFreshnessSummary(freshnessCounts, items.length),
     items,
   };
 }

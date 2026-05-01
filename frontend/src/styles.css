@@ -671,14 +671,75 @@ button {
   flex: 1 1 auto;
 }
 
+.signal-dependency-chip-statuses {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
 .signal-dependency-chip-related {
   border-color: rgba(125, 183, 224, 0.38);
   background: rgba(125, 183, 224, 0.08);
 }
 
+.signal-freshness-summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.signal-freshness-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  border: 1px solid var(--border-quiet);
+  border-radius: 999px;
+  padding: 3px 9px;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.signal-freshness-badge-fresh {
+  border-color: rgba(76, 182, 105, 0.16);
+  color: #c2d8c7;
+  background: rgba(76, 182, 105, 0.08);
+}
+
+.signal-freshness-badge-aging {
+  border-color: rgba(246, 180, 64, 0.16);
+  color: #ddd0a6;
+  background: rgba(246, 180, 64, 0.08);
+}
+
+.signal-freshness-badge-stale {
+  border-color: rgba(184, 65, 65, 0.14);
+  color: #d8c0c0;
+  background: rgba(184, 65, 65, 0.08);
+}
+
+.signal-freshness-badge-unknown {
+  border-color: var(--border-quiet);
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.05);
+}
+
 .signal-dependency-chip-note {
   color: #a7d6ff;
   font-size: 0.76rem;
+}
+
+.signal-dependency-chip-note-muted {
+  color: var(--text-muted);
 }
 
 .diagnosis-related-actions {

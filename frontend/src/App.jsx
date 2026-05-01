@@ -1063,7 +1063,11 @@ function normalizeServiceItems(items) {
         status: String(item?.status || "unknown").trim() || "unknown",
         host: String(item?.host || "unknown").trim() || "unknown",
         source: String(item?.source || "memory").trim() || "memory",
+        lastCheckedAt: item?.lastCheckedAt || null,
+        checkedAt: item?.checkedAt || null,
         lastSeen: item?.lastSeen || null,
+        updatedAt: item?.updatedAt || null,
+        healthCheckedAt: item?.healthCheckedAt || null,
         hasLogs: Boolean(item?.hasLogs),
         manager: readServiceString(item?.manager),
         processName: readServiceString(item?.processName),
@@ -1847,6 +1851,16 @@ function formatStatusLabel(value) {
       return `${part.charAt(0).toUpperCase()}${part.slice(1)}`;
     })
     .join(" ");
+}
+
+function formatDependencyFreshnessLabel(value) {
+  const normalized = String(value || "unknown").trim().toLowerCase();
+
+  if (!normalized || normalized === "unknown") {
+    return "Unknown freshness";
+  }
+
+  return formatStatusLabel(normalized);
 }
 
 function statusClassName(value) {
@@ -3415,6 +3429,7 @@ export default function App() {
                     <span className="status-badge status-warning">{dependencyHealthRollup.counts.warning} warning</span>
                     <span className="status-badge status-failed">{dependencyHealthRollup.counts.failed} failed</span>
                     <span className="status-badge status-unknown">{dependencyHealthRollup.counts.unknown} unknown</span>
+                    <span className="signal-freshness-summary">Status freshness: {dependencyHealthRollup.freshnessSummary}</span>
                   </div>
                   <div className="relationship-chip-row">
                     {dependencyHealthRollup.items.map((item) =>
@@ -3431,11 +3446,26 @@ export default function App() {
                         >
                           <span className="signal-dependency-chip-header">
                             <span className="relationship-chip-value">{item.label}</span>
-                            <span className={`status-badge ${statusClassName(item.status)}`}>{formatStatusLabel(item.status)}</span>
+                            <span className="signal-dependency-chip-statuses">
+                              <span className={`status-badge ${statusClassName(item.status)}`}>{formatStatusLabel(item.status)}</span>
+                              <span
+                                className={`signal-freshness-badge signal-freshness-badge-${item.freshness}`}
+                                title={
+                                  item.freshnessTimestamp
+                                    ? `${formatDependencyFreshnessLabel(item.freshness)} via ${item.freshnessTimestampSource || "timestamp"} at ${formatCreatedAt(item.freshnessTimestamp)}`
+                                    : "Unknown freshness from current service inventory"
+                                }
+                              >
+                                {formatDependencyFreshnessLabel(item.freshness)}
+                              </span>
+                            </span>
                           </span>
                           {item.endpoint ? <span className="relationship-chip-meta">Endpoint: {item.endpoint}</span> : null}
                           {item.confidence ? <span className="relationship-chip-meta">Confidence: {formatStatusLabel(item.confidence)}</span> : null}
                           {item.diagnosisLabel ? <span className="signal-dependency-chip-note">{item.diagnosisLabel}</span> : null}
+                          {item.diagnosisFreshnessLabel ? (
+                            <span className="signal-dependency-chip-note signal-dependency-chip-note-muted">{item.diagnosisFreshnessLabel}</span>
+                          ) : null}
                         </button>
                       ) : (
                         <span
@@ -3445,11 +3475,26 @@ export default function App() {
                         >
                           <span className="signal-dependency-chip-header">
                             <span className="relationship-chip-value">{item.label}</span>
-                            <span className={`status-badge ${statusClassName(item.status)}`}>{formatStatusLabel(item.status)}</span>
+                            <span className="signal-dependency-chip-statuses">
+                              <span className={`status-badge ${statusClassName(item.status)}`}>{formatStatusLabel(item.status)}</span>
+                              <span
+                                className={`signal-freshness-badge signal-freshness-badge-${item.freshness}`}
+                                title={
+                                  item.freshnessTimestamp
+                                    ? `${formatDependencyFreshnessLabel(item.freshness)} via ${item.freshnessTimestampSource || "timestamp"} at ${formatCreatedAt(item.freshnessTimestamp)}`
+                                    : "Unknown freshness from current service inventory"
+                                }
+                              >
+                                {formatDependencyFreshnessLabel(item.freshness)}
+                              </span>
+                            </span>
                           </span>
                           {item.endpoint ? <span className="relationship-chip-meta">Endpoint: {item.endpoint}</span> : null}
                           {item.confidence ? <span className="relationship-chip-meta">Confidence: {formatStatusLabel(item.confidence)}</span> : null}
                           {item.diagnosisLabel ? <span className="signal-dependency-chip-note">{item.diagnosisLabel}</span> : null}
+                          {item.diagnosisFreshnessLabel ? (
+                            <span className="signal-dependency-chip-note signal-dependency-chip-note-muted">{item.diagnosisFreshnessLabel}</span>
+                          ) : null}
                         </span>
                       ),
                     )}
