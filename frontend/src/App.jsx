@@ -655,7 +655,7 @@ function LogEventHighlights({ events, emptyMessage, onSelectService, selectedSer
             ) : null}
             {event.relatedEndpoint ? (
               <div className="detail-item">
-                <span className="detail-label">Endpoint</span>
+                <span className="detail-label">Related endpoint</span>
                 <span className="detail-value diagnosis-detail-value" title={event.relatedEndpoint}>
                   {event.relatedEndpoint}
                 </span>
@@ -663,7 +663,7 @@ function LogEventHighlights({ events, emptyMessage, onSelectService, selectedSer
             ) : null}
             {event.correlationReason ? (
               <div className="detail-item">
-                <span className="detail-label">Correlation reason</span>
+                <span className="detail-label">Correlation evidence</span>
                 <span className="detail-value diagnosis-detail-value" title={event.correlationReason}>
                   {event.correlationReason}
                 </span>
@@ -771,31 +771,60 @@ function uniqueTextValues(values) {
   return Array.from(new Set(normalizeCollection(values).map((value) => String(value || "").trim()).filter(Boolean)));
 }
 
-function extractHostnameFromUrl(value) {
-  const text = String(value || "").trim();
-
-  if (!text) {
-    return "";
-  }
-
-  try {
-    return new URL(text).hostname;
-  } catch (_error) {
-    return "";
-  }
-}
-
 function buildServiceRelationshipSections(service, services) {
   if (!service) {
     return [];
   }
 
-  const serviceIndex = new Map(
-    normalizeObjectCollection(services).map((item) => [String(item?.name || "").trim().toLowerCase(), item]),
-  );
+  const serviceIndex = new Map();
+  normalizeObjectCollection(services).forEach((item) => {
+    const serviceName = readServiceString(item?.name);
+
+    if (serviceName) {
+      serviceIndex.set(serviceName.toLowerCase(), item);
+    }
+  });
   const provides = normalizeObjectCollection(service.provides);
   const dependencies = normalizeObjectCollection(service.dependencies);
-  const providedEndpoints = uniqueTextValues([...provides.map((item) => readServiceString(item.endpoint)), getServiceLocalUrl(service)]);
+  const providedEndpoints = uniqueTextValues(provides.map((item) => readServiceString(item.endpoint)));
+  const healthEndpoints = uniqueTextValues(provides.map((item) => readServiceString(item.healthEndpoint)));
+  const readinessEndpoints = uniqueTextValues(provides.map((item) => readServiceString(item.readinessEndpoint)));
+  const publicHosts = uniqueTextValues(provides.map((item) => readServiceString(item.publicHost)));
+  const declaredPaths = uniqueTextValues(provides.flatMap((item) => normalizeStringArray(item.paths)));
+  const provideItems = [
+    {
+      key: "endpoints",
+      meta: "Endpoint",
+      values: providedEndpoints,
+    },
+    {
+      key: "health-endpoints",
+      meta: "Health endpoint",
+      values: healthEndpoints,
+    },
+    {
+      key: "readiness-endpoints",
+      meta: "Readiness endpoint",
+      values: readinessEndpoints,
+    },
+    {
+      key: "public-hosts",
+      meta: "Public host",
+      values: publicHosts,
+    },
+    {
+      key: "paths",
+      meta: "Paths",
+      values: declaredPaths,
+    },
+  ]
+    .filter((item) => item.values.length)
+    .map((item) => ({
+      key: item.key,
+      value: item.values.join("\n"),
+      meta: item.meta,
+      title: `${item.meta}: ${item.values.join(" · ")}`,
+    }));
   const dependencyItems = dependencies
     .map((dependency) => {
       const serviceId = readServiceString(dependency.serviceId);
@@ -805,91 +834,54 @@ function buildServiceRelationshipSections(service, services) {
       }
 
       const targetService = serviceIndex.get(serviceId.toLowerCase()) || null;
-      const displayName = readServiceString(targetService?.displayName);
-      const meta = displayName && displayName !== serviceId ? displayName : "";
+      const displayName = readServiceString(targetService?.displayName, targetService?.name);
+      const endpoint = readServiceString(dependency.endpoint);
+      const confidence = readServiceString(dependency.confidence);
+      const reason = readServiceString(dependency.reason, dependency.relationship);
+      const source = readServiceString(dependency.source);
+      const metaLines = [];
+
+      if (displayName && displayName !== serviceId) {
+        metaLines.push(`Service ID: ${serviceId}`);
+      }
+
+      if (endpoint) {
+        metaLines.push(`Endpoint: ${endpoint}`);
+      }
+
+      if (confidence) {
+        metaLines.push(`Confidence: ${confidence}`);
+      }
+
+      if (reason) {
+        metaLines.push(`Reason: ${reason}`);
+      }
+
+      if (source) {
+        metaLines.push(`Source: ${source}`);
+      }
 
       return {
-        key: serviceId.toLowerCase(),
-        value: serviceId,
-        meta,
+        key: `${serviceId.toLowerCase()}-${endpoint || metaLines.join("-") || "dependency"}`,
+        value: displayName || serviceId,
+        meta: metaLines.join("\n"),
         serviceId,
-        title: [serviceId, displayName, readServiceString(dependency.relationship), readServiceString(dependency.endpoint)]
-          .filter(Boolean)
-          .join(" · "),
+        title: [displayName || serviceId, ...metaLines].filter(Boolean).join(" · "),
       };
     })
     .filter(Boolean);
-  const healthEndpoints = uniqueTextValues([
-    ...provides.map((item) => readServiceString(item.healthEndpoint)),
-    getServiceLocalHealthUrl(service),
-  ]);
-  const readinessEndpoints = uniqueTextValues([
-    ...provides.map((item) => readServiceString(item.readinessEndpoint)),
-    getServiceLocalReadinessUrl(service),
-  ]);
-  const publicHosts = uniqueTextValues([
-    ...provides.map((item) => readServiceString(item.publicHost)),
-    extractHostnameFromUrl(getServicePublicUrl(service)),
-  ]);
-  const controlPlanePaths = uniqueTextValues(
-    provides.flatMap((item) => normalizeStringArray(item.paths)).filter((path) => String(path).startsWith("/admin/")),
-  );
 
   return [
-    providedEndpoints.length
+    provideItems.length
       ? {
           label: "Provides",
-          items: providedEndpoints.map((value) => ({
-            key: value,
-            value,
-            title: value,
-          })),
+          items: provideItems,
         }
       : null,
     dependencyItems.length
       ? {
           label: "Depends on",
           items: dependencyItems,
-        }
-      : null,
-    healthEndpoints.length
-      ? {
-          label: "Health endpoint",
-          items: healthEndpoints.map((value) => ({
-            key: value,
-            value,
-            title: value,
-          })),
-        }
-      : null,
-    readinessEndpoints.length
-      ? {
-          label: "Readiness endpoint",
-          items: readinessEndpoints.map((value) => ({
-            key: value,
-            value,
-            title: value,
-          })),
-        }
-      : null,
-    publicHosts.length
-      ? {
-          label: "Public host",
-          items: publicHosts.map((value) => ({
-            key: value,
-            value,
-            title: value,
-          })),
-        }
-      : null,
-    controlPlanePaths.length
-      ? {
-          label: "Control-plane paths",
-          items: controlPlanePaths.map((value) => ({
-            key: value,
-            value,
-            title: value,
-          })),
         }
       : null,
   ].filter(Boolean);
@@ -2856,7 +2848,7 @@ export default function App() {
           },
           diagnosis.relatedServiceId
             ? {
-                label: diagnosis.relatedServiceId === selectedService ? "Related service" : "Likely upstream",
+                label: "Related service",
                 value: diagnosis.relatedServiceName || diagnosis.relatedServiceId,
               }
             : null,
@@ -2868,22 +2860,14 @@ export default function App() {
             : null,
           diagnosis.relatedEndpoint
             ? {
-                label: "Endpoint",
+                label: "Related endpoint",
                 value: diagnosis.relatedEndpoint,
               }
             : null,
-          diagnosis.correlationReason
-            ? {
-                label: "Correlation",
-                value: diagnosis.correlationReason,
-              }
-            : null,
-          !diagnosis?.correlationReason
-            ? {
-                label: "Correlation",
-                value: "No confident match",
-              }
-            : null,
+          {
+            label: "Correlation evidence",
+            value: diagnosis?.correlationReason || "No confident match",
+          },
           diagnosis.correlationConfidence
             ? {
                 label: "Correlation confidence",
@@ -3351,12 +3335,12 @@ export default function App() {
                   </div>
                 ))}
               </div>
-              {selectedServiceRelationshipSections.length ? (
-                <div className="service-relationship-section">
-                  <div>
-                    <span className="detail-label">Relationships</span>
-                    <p className="service-relationship-copy">Declared metadata for provided endpoints, dependencies, and control-plane context.</p>
-                  </div>
+              <div className="service-relationship-section">
+                <div>
+                  <span className="detail-label">Relationships</span>
+                  <p className="service-relationship-copy">Declared provide and dependency metadata used for diagnosis correlation.</p>
+                </div>
+                {selectedServiceRelationshipSections.length ? (
                   <div className="service-relationship-list">
                     {selectedServiceRelationshipSections.map((section) => (
                       <div key={section.label} className="service-relationship-row">
@@ -3386,8 +3370,10 @@ export default function App() {
                       </div>
                     ))}
                   </div>
-                </div>
-              ) : null}
+                ) : (
+                  <div className="service-relationship-empty">No declared service relationships.</div>
+                )}
+              </div>
             </DisclosureSection>
           ) : null}
 

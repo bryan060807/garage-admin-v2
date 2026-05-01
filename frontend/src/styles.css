@@ -588,6 +588,10 @@ button {
   gap: 10px;
 }
 
+.service-relationship-empty {
+  color: var(--text-muted);
+}
+
 .service-relationship-row {
   display: grid;
   grid-template-columns: 140px minmax(0, 1fr);
@@ -639,6 +643,7 @@ button {
 .relationship-chip-meta {
   color: var(--text-muted);
   font-size: 0.76rem;
+  white-space: pre-wrap;
 }
 
 .diagnosis-related-actions {

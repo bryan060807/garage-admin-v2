@@ -325,6 +325,8 @@ const cases = [
       assert.equal(diagnosis.correlationConfidence, "high");
       assert.equal(diagnosis.correlationReason, "Matched declared dependency");
       assert.equal(events[0].relatedServiceId, "trackmaster-api");
+      assert.ok(events[0].relatedEndpoint.includes("127.0.0.1:3004"));
+      assert.equal(events[0].correlationConfidence, "high");
       assert.equal(events[0].correlationReason, "Matched declared dependency");
     },
   },
@@ -339,6 +341,8 @@ const cases = [
       assert.equal(diagnosis.correlationReason, "Matched provided health endpoint");
       assert.ok(diagnosis.relatedEndpoint.includes("127.0.0.1:3004/api/health"));
       assert.equal(events[0].relatedServiceId, "trackmaster-api");
+      assert.ok(events[0].relatedEndpoint.includes("127.0.0.1:3004/api/health"));
+      assert.equal(events[0].correlationConfidence, "high");
       assert.equal(events[0].correlationReason, "Matched provided health endpoint");
     },
   },
@@ -383,7 +387,11 @@ const cases = [
       assert.equal(diagnosis.relatedServiceId, "trackmaster-ui");
       assert.ok(diagnosis.relatedEndpoint.includes("127.0.0.1:3000"));
       assert.equal(diagnosis.correlationConfidence, "high");
+      assert.equal(diagnosis.correlationReason, "Port/name fallback");
       assert.equal(events[0].relatedServiceId, "trackmaster-ui");
+      assert.ok(events[0].relatedEndpoint.includes("127.0.0.1:3000"));
+      assert.equal(events[0].correlationConfidence, "high");
+      assert.equal(events[0].correlationReason, "Port/name fallback");
     },
   },
   {
@@ -395,7 +403,10 @@ const cases = [
       assert.equal(diagnosis.relatedServiceId, "trackmaster-ui");
       assert.equal(diagnosis.correlationConfidence, "high");
       assert.equal(diagnosis.correlationReason, "Matched public host");
+      assert.equal(diagnosis.relatedEndpoint, "trackmaster.aibry.shop");
       assert.equal(events[0].relatedServiceId, "trackmaster-ui");
+      assert.equal(events[0].relatedEndpoint, "trackmaster.aibry.shop");
+      assert.equal(events[0].correlationConfidence, "high");
       assert.equal(events[0].correlationReason, "Matched public host");
     },
   },
@@ -406,7 +417,11 @@ const cases = [
     }),
     verify(diagnosis, events) {
       assert.equal(diagnosis.relatedServiceId || "", "");
+      assert.equal(diagnosis.correlationReason || "", "");
+      assert.equal(diagnosis.correlationConfidence || "", "");
       assert.equal(events[0].relatedServiceId || "", "");
+      assert.equal(events[0].correlationReason || "", "");
+      assert.equal(events[0].correlationConfidence || "", "");
     },
   },
   {
@@ -421,6 +436,11 @@ const cases = [
       assert.ok(diagnosis.suggestedCommand.includes("Invoke-WebRequest"));
       assert.equal(events[0].errorType, "502 Upstream unavailable");
       assert.equal(diagnosis.relatedServiceId || "", "");
+      assert.equal(diagnosis.correlationReason || "", "");
+      assert.equal(diagnosis.correlationConfidence || "", "");
+      assert.equal(events[0].relatedServiceId || "", "");
+      assert.equal(events[0].correlationReason || "", "");
+      assert.equal(events[0].correlationConfidence || "", "");
     },
   },
   {
@@ -444,9 +464,10 @@ const cases = [
     verify(diagnosis, events) {
       assert.equal(diagnosis.relatedServiceId, "trackmaster-ui");
       assert.equal(diagnosis.correlationConfidence, "high");
-      assert.equal(diagnosis.correlationReason, "Matched service/process name");
+      assert.equal(diagnosis.correlationReason, "Port/name fallback");
       assert.equal(events[0].relatedServiceId, "trackmaster-ui");
-      assert.equal(events[0].correlationReason, "Matched service/process name");
+      assert.equal(events[0].correlationConfidence, "high");
+      assert.equal(events[0].correlationReason, "Port/name fallback");
     },
   },
   {
@@ -470,9 +491,10 @@ const cases = [
     verify(diagnosis, events) {
       assert.equal(diagnosis.relatedServiceId, "node-agent");
       assert.equal(diagnosis.relatedServiceHost, "fedora");
-      assert.equal(diagnosis.correlationReason, "Fallback inference");
+      assert.equal(diagnosis.correlationReason, "Matched provided path");
       assert.equal(events[0].relatedServiceId, "node-agent");
-      assert.equal(events[0].correlationReason, "Fallback inference");
+      assert.equal(events[0].correlationConfidence, "high");
+      assert.equal(events[0].correlationReason, "Matched provided path");
     },
   },
   {

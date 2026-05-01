@@ -12,6 +12,11 @@ const URL_CANDIDATE_PATTERN = /https?:\/\/[^\s'"`)>]+/gi;
 const HOST_PORT_CANDIDATE_PATTERN = /((?:\d{1,3}\.){3}\d{1,3}|localhost|[A-Za-z0-9.-]+):(\d{2,5})(\/[^\s'"`)>]+)?/gi;
 const LOG_EVENT_LIMIT = 6;
 const CONTROL_PLANE_IDS = new Set(["aibry-admin", "admin-proxy", "node-agent"]);
+const CORRELATION_REASON_DECLARED_DEPENDENCY = "Matched declared dependency";
+const CORRELATION_REASON_PROVIDED_HEALTH = "Matched provided health endpoint";
+const CORRELATION_REASON_PROVIDED_PATH = "Matched provided path";
+const CORRELATION_REASON_PUBLIC_HOST = "Matched public host";
+const CORRELATION_REASON_PORT_OR_NAME_FALLBACK = "Port/name fallback";
 
 const SEVERITY_SCORES = {
   critical: 3,
@@ -729,7 +734,7 @@ function buildServiceMentionMatch(service, text) {
       return {
         score: 10,
         relatedEndpoint: readServiceString(service.localHealthUrl, service.localReadinessUrl, service.localUrl, service.publicUrl),
-        correlationReason: "Matched service/process name",
+        correlationReason: CORRELATION_REASON_PORT_OR_NAME_FALLBACK,
       };
     }
   }
@@ -765,7 +770,7 @@ function buildEndpointCorrelationMatches(service, endpoints, issue) {
       matches.push({
         score,
         relatedEndpoint: endpoint.raw || serviceEndpoint.raw,
-        correlationReason: isHealthMatch ? "Matched provided health endpoint" : "Fallback inference",
+        correlationReason: isHealthMatch ? CORRELATION_REASON_PROVIDED_HEALTH : CORRELATION_REASON_PORT_OR_NAME_FALLBACK,
       });
     });
   });
@@ -798,9 +803,11 @@ function candidateMatchesServiceHealthEndpoint(service, endpointCandidate) {
 function buildProvidedMetadataMatches(service, text, endpoints, options = {}) {
   const matches = [];
   const baseScore = Number(options.baseScore) || 10;
-  const fallbackReason = cleanText(options.fallbackReason) || "Fallback inference";
-  const healthReason = cleanText(options.healthReason) || "Matched provided health endpoint";
-  const publicHostReason = cleanText(options.publicHostReason) || "Matched public host";
+  const fallbackReason = cleanText(options.fallbackReason) || CORRELATION_REASON_PORT_OR_NAME_FALLBACK;
+  const endpointReason = cleanText(options.endpointReason) || fallbackReason;
+  const pathReason = cleanText(options.pathReason) || CORRELATION_REASON_PROVIDED_PATH;
+  const healthReason = cleanText(options.healthReason) || CORRELATION_REASON_PROVIDED_HEALTH;
+  const publicHostReason = cleanText(options.publicHostReason) || CORRELATION_REASON_PUBLIC_HOST;
 
   (service.provides || []).forEach((provide) => {
     if (provide.publicHost && textHasToken(text, provide.publicHost)) {
@@ -823,7 +830,7 @@ function buildProvidedMetadataMatches(service, text, endpoints, options = {}) {
       matches.push({
         score: baseScore + 2,
         relatedEndpoint: readServiceString(provide.healthEndpoint, provide.endpoint, path),
-        correlationReason: fallbackReason,
+        correlationReason: pathReason,
       });
     });
 
@@ -851,7 +858,7 @@ function buildProvidedMetadataMatches(service, text, endpoints, options = {}) {
             endpoint.raw ||
             serviceEndpoint.raw ||
             readServiceString(provide.healthEndpoint, provide.readinessEndpoint, provide.endpoint),
-          correlationReason: isHealthMatch ? healthReason : fallbackReason,
+          correlationReason: isHealthMatch ? healthReason : endpointReason,
         });
       });
     });
@@ -877,7 +884,7 @@ function buildDeclaredDependencyMatches(contextService, dependency, targetServic
         targetService.localUrl,
         targetService.publicUrl,
       ),
-      correlationReason: "Matched declared dependency",
+      correlationReason: CORRELATION_REASON_DECLARED_DEPENDENCY,
     });
   }
 
@@ -891,7 +898,7 @@ function buildDeclaredDependencyMatches(contextService, dependency, targetServic
         targetService.localUrl,
         targetService.publicUrl,
       ),
-      correlationReason: "Matched service/process name",
+      correlationReason: CORRELATION_REASON_DECLARED_DEPENDENCY,
     });
   }
 
@@ -913,8 +920,8 @@ function buildDeclaredDependencyMatches(contextService, dependency, targetServic
         relatedEndpoint: dependency.endpoint || dependency.endpointCandidate.raw || endpoint.raw,
         correlationReason:
           pathMatches && candidateMatchesServiceHealthEndpoint(targetService, dependency.endpointCandidate)
-            ? "Matched provided health endpoint"
-            : "Matched declared dependency",
+            ? CORRELATION_REASON_PROVIDED_HEALTH
+            : CORRELATION_REASON_DECLARED_DEPENDENCY,
       });
     });
   }
@@ -923,13 +930,15 @@ function buildDeclaredDependencyMatches(contextService, dependency, targetServic
     matches.push({
       score: 13,
       relatedEndpoint: dependency.endpoint || dependency.path,
-      correlationReason: "Matched declared dependency",
+      correlationReason: CORRELATION_REASON_DECLARED_DEPENDENCY,
     });
   }
 
   buildProvidedMetadataMatches(targetService, text, endpoints, {
     baseScore: 12,
-    fallbackReason: "Matched declared dependency",
+    fallbackReason: CORRELATION_REASON_DECLARED_DEPENDENCY,
+    endpointReason: CORRELATION_REASON_DECLARED_DEPENDENCY,
+    pathReason: CORRELATION_REASON_DECLARED_DEPENDENCY,
   }).forEach((match) => matches.push(match));
 
   return matches;
@@ -947,7 +956,7 @@ function buildControlPlaneHeuristicMatch(service, text) {
     return {
       score: 8,
       relatedEndpoint: readServiceString(service.localHealthUrl, service.localUrl, service.publicUrl),
-      correlationReason: "Fallback inference",
+      correlationReason: CORRELATION_REASON_PORT_OR_NAME_FALLBACK,
     };
   }
 
@@ -955,7 +964,7 @@ function buildControlPlaneHeuristicMatch(service, text) {
     return {
       score: 7,
       relatedEndpoint: readServiceString(service.publicUrl, service.localUrl, service.localHealthUrl),
-      correlationReason: "Fallback inference",
+      correlationReason: CORRELATION_REASON_PORT_OR_NAME_FALLBACK,
     };
   }
 
@@ -963,7 +972,7 @@ function buildControlPlaneHeuristicMatch(service, text) {
     return {
       score: 7,
       relatedEndpoint: readServiceString(service.publicUrl, service.localHealthUrl, service.localUrl),
-      correlationReason: "Fallback inference",
+      correlationReason: CORRELATION_REASON_PORT_OR_NAME_FALLBACK,
     };
   }
 
@@ -1053,7 +1062,7 @@ function correlateIssue(context, issue) {
         service: selfService,
         score: 8,
         relatedEndpoint: readServiceString(selfService.localHealthUrl, selfService.localReadinessUrl, selfService.localUrl),
-        correlationReason: "Fallback inference",
+        correlationReason: CORRELATION_REASON_PORT_OR_NAME_FALLBACK,
       });
     }
   }
