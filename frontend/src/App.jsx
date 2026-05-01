@@ -1,0 +1,4150 @@
+import { Component, useEffect, useRef, useState } from "react";
+import { extractServiceDiagnosis } from "./diagnostics";
+
+const RIGHT_PANEL_SPLIT_STORAGE_KEY = "garage-admin-v2:right-panel-split";
+const LAYOUT_CUSTOMIZATION_VERSION = 1;
+const LAYOUT_CUSTOMIZATION_STORAGE_KEY = `garage-admin-v2:experimental-layout:v${LAYOUT_CUSTOMIZATION_VERSION}`;
+const ENABLE_EXPERIMENTAL_LAYOUT_CUSTOMIZATION = ["1", "true", "yes", "on"].includes(
+  String(import.meta.env.VITE_ENABLE_EXPERIMENTAL_LAYOUT_CUSTOMIZATION || "").toLowerCase(),
+);
+const DEFAULT_RIGHT_PANEL_SPLIT = 0.45;
+const RIGHT_PANEL_MIN_PX = 240;
+const RIGHT_PANEL_RESIZER_PX = 12;
+const DEFAULT_RIGHT_PANEL_ORDER = ["actions", "audit"];
+const RIGHT_PANEL_CARD_IDS = new Set(DEFAULT_RIGHT_PANEL_ORDER);
+const RIGHT_PANEL_CARD_LABELS = {
+  actions: "Actions",
+  audit: "Recent Audit",
+};
+
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function clampRightPanelSplit(value, containerHeight = 0) {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_RIGHT_PANEL_SPLIT;
+  }
+
+  const fallbackMin = 0.18;
+  const fallbackMax = 0.82;
+
+  if (!containerHeight) {
+    return clamp(value, fallbackMin, fallbackMax);
+  }
+
+  const availableHeight = Math.max(containerHeight - RIGHT_PANEL_RESIZER_PX, 1);
+
+  if (availableHeight <= RIGHT_PANEL_MIN_PX * 2) {
+    return 0.5;
+  }
+
+  const minRatio = RIGHT_PANEL_MIN_PX / availableHeight;
+  const maxRatio = 1 - minRatio;
+
+  return clamp(value, minRatio, maxRatio);
+}
+
+function loadRightPanelSplit() {
+  try {
+    if (typeof window === "undefined") {
+      return DEFAULT_RIGHT_PANEL_SPLIT;
+    }
+
+    const stored = window.localStorage.getItem(RIGHT_PANEL_SPLIT_STORAGE_KEY);
+    const parsed = Number(stored);
+
+    if (Number.isFinite(parsed)) {
+      return clampRightPanelSplit(parsed);
+    }
+  } catch (_error) {
+    return DEFAULT_RIGHT_PANEL_SPLIT;
+  }
+
+  return DEFAULT_RIGHT_PANEL_SPLIT;
+}
+
+function saveRightPanelSplit(value) {
+  try {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(RIGHT_PANEL_SPLIT_STORAGE_KEY, String(value));
+    }
+  } catch (_error) {
+    // localStorage can be unavailable in locked-down browser contexts.
+  }
+}
+
+function normalizeRightPanelOrder(order) {
+  if (!Array.isArray(order)) {
+    return [...DEFAULT_RIGHT_PANEL_ORDER];
+  }
+
+  const next = [];
+
+  order.forEach((cardId) => {
+    if (RIGHT_PANEL_CARD_IDS.has(cardId) && !next.includes(cardId)) {
+      next.push(cardId);
+    }
+  });
+
+  DEFAULT_RIGHT_PANEL_ORDER.forEach((cardId) => {
+    if (!next.includes(cardId)) {
+      next.push(cardId);
+    }
+  });
+
+  return next.slice(0, DEFAULT_RIGHT_PANEL_ORDER.length);
+}
+
+function createDefaultExperimentalLayout(split = DEFAULT_RIGHT_PANEL_SPLIT) {
+  return {
+    version: LAYOUT_CUSTOMIZATION_VERSION,
+    zones: {
+      right: [...DEFAULT_RIGHT_PANEL_ORDER],
+    },
+    splitRatios: {
+      right: clampRightPanelSplit(split),
+    },
+  };
+}
+
+function normalizeExperimentalLayout(layout, fallbackSplit = DEFAULT_RIGHT_PANEL_SPLIT) {
+  if (!layout || typeof layout !== "object" || layout.version !== LAYOUT_CUSTOMIZATION_VERSION) {
+    return createDefaultExperimentalLayout(fallbackSplit);
+  }
+
+  return {
+    version: LAYOUT_CUSTOMIZATION_VERSION,
+    zones: {
+      right: normalizeRightPanelOrder(layout.zones?.right),
+    },
+    splitRatios: {
+      right: clampRightPanelSplit(Number(layout.splitRatios?.right)),
+    },
+  };
+}
+
+function loadExperimentalLayout() {
+  try {
+    if (typeof window === "undefined") {
+      return createDefaultExperimentalLayout();
+    }
+
+    const stored = window.localStorage.getItem(LAYOUT_CUSTOMIZATION_STORAGE_KEY);
+
+    if (!stored) {
+      return createDefaultExperimentalLayout();
+    }
+
+    return normalizeExperimentalLayout(JSON.parse(stored));
+  } catch (_error) {
+    return createDefaultExperimentalLayout();
+  }
+}
+
+function loadInitialRightLayout() {
+  if (ENABLE_EXPERIMENTAL_LAYOUT_CUSTOMIZATION) {
+    return loadExperimentalLayout();
+  }
+
+  return createDefaultExperimentalLayout(loadRightPanelSplit());
+}
+
+function saveExperimentalLayout(layout) {
+  try {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(
+        LAYOUT_CUSTOMIZATION_STORAGE_KEY,
+        JSON.stringify(normalizeExperimentalLayout(layout)),
+      );
+    }
+  } catch (_error) {
+    // localStorage can be unavailable in locked-down browser contexts.
+  }
+}
+
+function removeSavedLayoutPreferences() {
+  try {
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem(LAYOUT_CUSTOMIZATION_STORAGE_KEY);
+      window.localStorage.removeItem(RIGHT_PANEL_SPLIT_STORAGE_KEY);
+    }
+  } catch (_error) {
+    // A reset should still update the in-memory layout if storage is blocked.
+  }
+}
+
+function moveCardInOrder(order, cardId, direction) {
+  const next = normalizeRightPanelOrder(order);
+  const fromIndex = next.indexOf(cardId);
+  const toIndex = clamp(fromIndex + direction, 0, next.length - 1);
+
+  if (fromIndex < 0 || fromIndex === toIndex) {
+    return next;
+  }
+
+  const [movedCard] = next.splice(fromIndex, 1);
+  next.splice(toIndex, 0, movedCard);
+
+  return next;
+}
+
+function LayoutCardControls({ cardId, label, order, onMove }) {
+  const normalizedOrder = normalizeRightPanelOrder(order);
+  const index = normalizedOrder.indexOf(cardId);
+
+  return (
+    <div className="layout-card-controls" aria-label={`${label} layout controls`}>
+      <button
+        type="button"
+        className="layout-move-button"
+        onClick={() => onMove(cardId, -1)}
+        disabled={index <= 0}
+        aria-label={`Move ${label} up`}
+      >
+        Up
+      </button>
+      <button
+        type="button"
+        className="layout-move-button"
+        onClick={() => onMove(cardId, 1)}
+        disabled={index < 0 || index >= normalizedOrder.length - 1}
+        aria-label={`Move ${label} down`}
+      >
+        Down
+      </button>
+    </div>
+  );
+}
+
+class SelectedServiceWorkspaceBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = {
+      hasError: false,
+      message: "",
+    };
+  }
+
+  static getDerivedStateFromError(error) {
+    return {
+      hasError: true,
+      message: error?.message || "Unknown workspace error",
+    };
+  }
+
+  componentDidCatch(error) {
+    console.error("Selected service workspace failed to render", error);
+  }
+
+  componentDidUpdate(prevProps) {
+    if (prevProps.resetKey !== this.props.resetKey && this.state.hasError) {
+      this.setState({
+        hasError: false,
+        message: "",
+      });
+    }
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <section className="panel workspace-fallback-panel">
+          <span className="section-title">Workspace Fallback</span>
+          <h2>Selected service view is unavailable</h2>
+          <p>
+            {this.props.serviceName
+              ? `${this.props.serviceName} returned incomplete UI data.`
+              : "The selected service returned incomplete UI data."}
+          </p>
+          <div className="inline-note">
+            {this.state.message || "Select another service or refresh service metadata."}
+          </div>
+        </section>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+function DisclosureSection({ title, summary, defaultOpen = false, className = "", children }) {
+  const [open, setOpen] = useState(defaultOpen);
+
+  return (
+    <details
+      className={`disclosure-section ${className}`.trim()}
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary className="disclosure-summary">
+        <span className="disclosure-copy">
+          <span className="disclosure-title">{title}</span>
+          <span className="disclosure-text" title={typeof summary === "string" ? summary : undefined}>
+            {summary}
+          </span>
+        </span>
+        <span className="disclosure-caret" aria-hidden="true" />
+      </summary>
+      <div className="disclosure-body">{children}</div>
+    </details>
+  );
+}
+
+function ServiceGroupDisclosure({ title, summary, defaultOpen = false, forceOpen = false, className = "", children }) {
+  const [open, setOpen] = useState(defaultOpen || forceOpen);
+
+  useEffect(() => {
+    if (forceOpen) {
+      setOpen(true);
+    }
+  }, [forceOpen]);
+
+  return (
+    <details
+      className={`disclosure-section service-group-disclosure ${className}`.trim()}
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary className="disclosure-summary">
+        <span className="disclosure-copy">
+          <span className="disclosure-title">{title}</span>
+          <span className="disclosure-text" title={typeof summary === "string" ? summary : undefined}>
+            {summary}
+          </span>
+        </span>
+        <span className="disclosure-caret" aria-hidden="true" />
+      </summary>
+      <div className="disclosure-body">{children}</div>
+    </details>
+  );
+}
+
+function createId() {
+  return `id-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function getLogText(payload) {
+  if (typeof payload === "string") {
+    return payload;
+  }
+
+  if (payload && typeof payload.logs === "string") {
+    return payload.logs;
+  }
+
+  return "";
+}
+
+function formatAuditValue(value) {
+  if (value == null) {
+    return "";
+  }
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  return JSON.stringify(value, null, 2);
+}
+
+function formatCreatedAt(value) {
+  if (!value) {
+    return "Unknown";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return date.toLocaleString();
+}
+
+function formatFileTimestamp(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return "unknown-time";
+  }
+
+  return date.toISOString().replace(/\.\d{3}Z$/, "Z").replace(/[:]/g, "-");
+}
+
+function safeFilePart(value) {
+  return (
+    String(value || "garage-admin")
+      .trim()
+      .replace(/[^a-z0-9._-]+/gi, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 80) || "garage-admin"
+  );
+}
+
+function downloadFile(filename, content, type = "text/plain;charset=utf-8") {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+async function copyText(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  textarea.remove();
+}
+
+function countLogLines(value) {
+  if (typeof value !== "string" || !value) {
+    return 0;
+  }
+
+  return value.split(/\r?\n/).length;
+}
+
+function formatBytes(value) {
+  const bytes = typeof value === "string" ? value.length : Number(value) || 0;
+
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatDurationSeconds(value) {
+  const totalSeconds = Number(value);
+
+  if (!Number.isFinite(totalSeconds) || totalSeconds < 0) {
+    return "";
+  }
+
+  const rounded = Math.round(totalSeconds);
+  const days = Math.floor(rounded / 86400);
+  const hours = Math.floor((rounded % 86400) / 3600);
+  const minutes = Math.floor((rounded % 3600) / 60);
+
+  if (days > 0) {
+    return `${days}d ${hours}h`;
+  }
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+
+  if (minutes > 0) {
+    return `${minutes}m`;
+  }
+
+  return `${rounded}s`;
+}
+
+function splitLogLine(line) {
+  const match = String(line).match(
+    /^(\[?\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?\]?)(?:\s+|:\s*)?(.*)$/,
+  );
+  const message = match ? match[2] || "" : String(line);
+  const bracketPrefix = message.match(/^(\[[^\]]{2,48}\])\s+(.*)$/);
+
+  if (bracketPrefix) {
+    return {
+      timestamp: match ? match[1].replace(/^\[|\]$/g, "") : "",
+      prefix: bracketPrefix[1],
+      message: bracketPrefix[2] || "",
+    };
+  }
+
+  const prefixMatch = message.match(/^([A-Za-z0-9_.@/-]{2,48}(?:\[\d+\])?)(?::|\s+-\s+|\s+\|\s+)\s*(.*)$/);
+  const prefix = prefixMatch?.[1] || "";
+  const severityPrefixes = ["debug", "info", "warn", "warning", "error", "fatal", "trace"];
+
+  if (prefix && !severityPrefixes.includes(prefix.toLowerCase())) {
+    return {
+      timestamp: match ? match[1].replace(/^\[|\]$/g, "") : "",
+      prefix,
+      message: prefixMatch[2] || "",
+    };
+  }
+
+  return {
+    timestamp: match ? match[1].replace(/^\[|\]$/g, "") : "",
+    prefix: "",
+    message,
+  };
+}
+
+function getLogTone(line) {
+  if (/\b(fatal|panic|crash|exception)\b/i.test(line)) {
+    return "log-critical";
+  }
+
+  if (/\b(error|failed|failure|unhealthy|denied)\b/i.test(line)) {
+    return "log-error";
+  }
+
+  if (/\b(warn|warning|retry|timeout|degraded)\b/i.test(line)) {
+    return "log-warning";
+  }
+
+  if (/\b(ok|ready|started|listening|healthy|success)\b/i.test(line)) {
+    return "log-success";
+  }
+
+  return "";
+}
+
+function getLogSignals(value) {
+  const lines = typeof value === "string" && value ? value.split(/\r?\n/) : [];
+  const signals = lines.reduce(
+    (current, line) => {
+      const tone = getLogTone(line);
+
+      if (tone === "log-critical") {
+        current.critical += 1;
+      } else if (tone === "log-error") {
+        current.errors += 1;
+      } else if (tone === "log-warning") {
+        current.warnings += 1;
+      }
+
+      return current;
+    },
+    { critical: 0, errors: 0, warnings: 0 },
+  );
+
+  const alertCount = signals.critical + signals.errors + signals.warnings;
+  let summary = "No log alerts in current output.";
+
+  if (alertCount) {
+    summary = `${alertCount} log alert${alertCount === 1 ? "" : "s"}`;
+  }
+
+  return {
+    ...signals,
+    alertCount,
+    summary,
+  };
+}
+
+function LogViewer({ lines, emptyMessage }) {
+  const normalizedLines = normalizeCollection(lines).map((line) => String(line ?? ""));
+
+  if (!normalizedLines.length) {
+    return <div className="empty-state output-empty">{emptyMessage}</div>;
+  }
+
+  return (
+    <div className="logs-block" role="log" aria-label="Service logs">
+      {normalizedLines.map((line, index) => {
+        const parts = splitLogLine(line);
+        const tone = getLogTone(line);
+
+        return (
+          <div key={`${index}-${line.slice(0, 16)}`} className={`log-row ${tone}`}>
+            <span className="log-line-number">{index + 1}</span>
+            <span className="log-timestamp">{parts.timestamp}</span>
+            <span className="log-prefix">{parts.prefix}</span>
+            <span className="log-message">{parts.message || " "}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function LogEventHighlights({ events, emptyMessage, onSelectService, selectedServiceId }) {
+  const items = normalizeObjectCollection(events);
+
+  if (!items.length) {
+    return <div className="empty-state output-empty log-highlight-empty">{emptyMessage}</div>;
+  }
+
+  return (
+    <div className="log-highlight-list">
+      {items.map((event, index) => (
+        <article
+          key={event.id || `${event.errorType || event.primaryIssue || "event"}-${event.timestamp || index}`}
+          className={`log-highlight-card log-highlight-card-${event.severity || "unknown"}`}
+        >
+          <div className="log-highlight-header">
+            <div className="log-highlight-heading">
+              <span className="detail-label">Detected error</span>
+              <strong title={event.detectedError || event.primaryIssue}>
+                {event.detectedError || event.primaryIssue || "Extracted log event"}
+              </strong>
+            </div>
+            <div className="inline-badges">
+              <span className={`status-badge status-severity-${event.severity || "unknown"}`}>
+                Severity: {formatBadgeLabel(event.severity)}
+              </span>
+              <span className={`status-badge status-confidence-${event.confidence || "low"}`}>
+                Confidence: {formatBadgeLabel(event.confidence)}
+              </span>
+            </div>
+          </div>
+
+          <div className="log-highlight-grid">
+            <div className="detail-item">
+              <span className="detail-label">Error type</span>
+              <span className="detail-value diagnosis-detail-value" title={event.errorType || "General failure"}>
+                {event.errorType || "General failure"}
+              </span>
+            </div>
+            <div className="detail-item">
+              <span className="detail-label">Affected service</span>
+              <span className="detail-value diagnosis-detail-value" title={event.affectedService || "Unknown"}>
+                {event.affectedService || "Unknown"}
+              </span>
+            </div>
+            <div className="detail-item">
+              <span className="detail-label">Most relevant error</span>
+              <span className="detail-value diagnosis-detail-value" title={event.mostRelevantError || "No matching error text."}>
+                {event.mostRelevantError || "No matching error text."}
+              </span>
+            </div>
+            <div className="detail-item">
+              <span className="detail-label">Timestamp</span>
+              <span className="detail-value diagnosis-detail-value" title={event.timestamp || "Unknown"}>
+                {event.timestamp ? formatCreatedAt(event.timestamp) : "Unknown"}
+              </span>
+            </div>
+            {event.relatedServiceId ? (
+              <div className="detail-item">
+                <span className="detail-label">Related service</span>
+                <span
+                  className="detail-value diagnosis-detail-value"
+                  title={[event.relatedServiceName || event.relatedServiceId, event.relatedServiceHost, event.relatedServiceManager]
+                    .filter(Boolean)
+                    .join(" · ")}
+                >
+                  {[event.relatedServiceName || event.relatedServiceId, event.relatedServiceHost, event.relatedServiceManager]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </span>
+                {typeof onSelectService === "function" && event.relatedServiceId !== selectedServiceId ? (
+                  <button
+                    type="button"
+                    className="mini-button relationship-select-button"
+                    onClick={() => onSelectService(event.relatedServiceId)}
+                  >
+                    Select service
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+            {event.relatedEndpoint ? (
+              <div className="detail-item">
+                <span className="detail-label">Endpoint</span>
+                <span className="detail-value diagnosis-detail-value" title={event.relatedEndpoint}>
+                  {event.relatedEndpoint}
+                </span>
+              </div>
+            ) : null}
+            {event.correlationReason ? (
+              <div className="detail-item">
+                <span className="detail-label">Correlation reason</span>
+                <span className="detail-value diagnosis-detail-value" title={event.correlationReason}>
+                  {event.correlationReason}
+                </span>
+              </div>
+            ) : null}
+            {event.correlationConfidence ? (
+              <div className="detail-item">
+                <span className="detail-label">Correlation confidence</span>
+                <span className="detail-value diagnosis-detail-value" title={event.correlationConfidence}>
+                  {formatBadgeLabel(event.correlationConfidence)}
+                </span>
+              </div>
+            ) : null}
+            {event.filePath ? (
+              <div className="detail-item">
+                <span className="detail-label">File</span>
+                <span className="detail-value diagnosis-detail-value" title={event.filePath}>
+                  {event.filePath}
+                </span>
+              </div>
+            ) : null}
+            {event.lineNumber ? (
+              <div className="detail-item">
+                <span className="detail-label">Line</span>
+                <span className="detail-value diagnosis-detail-value" title={String(event.lineNumber)}>
+                  {event.lineNumber}
+                </span>
+              </div>
+            ) : null}
+          </div>
+
+          {event.suggestedCheck ? (
+            <div className="log-highlight-command-block">
+              <span className="detail-label">Suggested check</span>
+              <pre className="diagnosis-command" tabIndex={0}>
+                {event.suggestedCheck}
+              </pre>
+            </div>
+          ) : null}
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function isPlainObject(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function toPlainObject(value) {
+  return isPlainObject(value) ? value : {};
+}
+
+function normalizeCollection(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function normalizeObjectCollection(value) {
+  return normalizeCollection(value).filter((item) => isPlainObject(item));
+}
+
+function normalizeStringArray(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.map((entry) => String(entry || "").trim()).filter(Boolean);
+}
+
+function normalizeServiceRelationArray(value) {
+  return normalizeObjectCollection(value)
+    .map((entry) => {
+      const item = toPlainObject(entry);
+      const normalized = {};
+
+      Object.entries(item).forEach(([key, rawValue]) => {
+        if (Array.isArray(rawValue)) {
+          const values = normalizeStringArray(rawValue);
+
+          if (values.length) {
+            normalized[key] = values;
+          }
+
+          return;
+        }
+
+        if (typeof rawValue === "boolean") {
+          normalized[key] = rawValue;
+          return;
+        }
+
+        const text = String(rawValue || "").trim();
+
+        if (text) {
+          normalized[key] = text;
+        }
+      });
+
+      return Object.keys(normalized).length ? normalized : null;
+    })
+    .filter(Boolean);
+}
+
+function uniqueTextValues(values) {
+  return Array.from(new Set(normalizeCollection(values).map((value) => String(value || "").trim()).filter(Boolean)));
+}
+
+function extractHostnameFromUrl(value) {
+  const text = String(value || "").trim();
+
+  if (!text) {
+    return "";
+  }
+
+  try {
+    return new URL(text).hostname;
+  } catch (_error) {
+    return "";
+  }
+}
+
+function buildServiceRelationshipSections(service, services) {
+  if (!service) {
+    return [];
+  }
+
+  const serviceIndex = new Map(
+    normalizeObjectCollection(services).map((item) => [String(item?.name || "").trim().toLowerCase(), item]),
+  );
+  const provides = normalizeObjectCollection(service.provides);
+  const dependencies = normalizeObjectCollection(service.dependencies);
+  const providedEndpoints = uniqueTextValues([...provides.map((item) => readServiceString(item.endpoint)), getServiceLocalUrl(service)]);
+  const dependencyItems = dependencies
+    .map((dependency) => {
+      const serviceId = readServiceString(dependency.serviceId);
+
+      if (!serviceId) {
+        return null;
+      }
+
+      const targetService = serviceIndex.get(serviceId.toLowerCase()) || null;
+      const displayName = readServiceString(targetService?.displayName);
+      const meta = displayName && displayName !== serviceId ? displayName : "";
+
+      return {
+        key: serviceId.toLowerCase(),
+        value: serviceId,
+        meta,
+        serviceId,
+        title: [serviceId, displayName, readServiceString(dependency.relationship), readServiceString(dependency.endpoint)]
+          .filter(Boolean)
+          .join(" · "),
+      };
+    })
+    .filter(Boolean);
+  const healthEndpoints = uniqueTextValues([
+    ...provides.map((item) => readServiceString(item.healthEndpoint)),
+    getServiceLocalHealthUrl(service),
+  ]);
+  const readinessEndpoints = uniqueTextValues([
+    ...provides.map((item) => readServiceString(item.readinessEndpoint)),
+    getServiceLocalReadinessUrl(service),
+  ]);
+  const publicHosts = uniqueTextValues([
+    ...provides.map((item) => readServiceString(item.publicHost)),
+    extractHostnameFromUrl(getServicePublicUrl(service)),
+  ]);
+  const controlPlanePaths = uniqueTextValues(
+    provides.flatMap((item) => normalizeStringArray(item.paths)).filter((path) => String(path).startsWith("/admin/")),
+  );
+
+  return [
+    providedEndpoints.length
+      ? {
+          label: "Provides",
+          items: providedEndpoints.map((value) => ({
+            key: value,
+            value,
+            title: value,
+          })),
+        }
+      : null,
+    dependencyItems.length
+      ? {
+          label: "Depends on",
+          items: dependencyItems,
+        }
+      : null,
+    healthEndpoints.length
+      ? {
+          label: "Health endpoint",
+          items: healthEndpoints.map((value) => ({
+            key: value,
+            value,
+            title: value,
+          })),
+        }
+      : null,
+    readinessEndpoints.length
+      ? {
+          label: "Readiness endpoint",
+          items: readinessEndpoints.map((value) => ({
+            key: value,
+            value,
+            title: value,
+          })),
+        }
+      : null,
+    publicHosts.length
+      ? {
+          label: "Public host",
+          items: publicHosts.map((value) => ({
+            key: value,
+            value,
+            title: value,
+          })),
+        }
+      : null,
+    controlPlanePaths.length
+      ? {
+          label: "Control-plane paths",
+          items: controlPlanePaths.map((value) => ({
+            key: value,
+            value,
+            title: value,
+          })),
+        }
+      : null,
+  ].filter(Boolean);
+}
+
+function compactDetailItems(items) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+
+  return items.filter((item) => item && typeof item === "object" && String(item.label || "").trim());
+}
+
+function readServiceString(...values) {
+  for (const value of values) {
+    const text = String(value || "").trim();
+
+    if (text) {
+      return text;
+    }
+  }
+
+  return "";
+}
+
+function readServiceNumber(...values) {
+  for (const value of values) {
+    const parsed = Number(value);
+
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  return null;
+}
+
+function normalizeServiceCapability(value) {
+  const capability = toPlainObject(value);
+
+  return {
+    supported: capability.supported === true,
+    executor: readServiceString(capability.executor),
+    mode: readServiceString(capability.mode),
+    reason: readServiceString(capability.reason),
+    setupHint: readServiceString(capability.setupHint),
+  };
+}
+
+function normalizeServiceCapabilities(value) {
+  const capabilities = toPlainObject(value);
+
+  return {
+    logs: normalizeServiceCapability(capabilities.logs),
+    health: normalizeServiceCapability(capabilities.health),
+    restart: normalizeServiceCapability(capabilities.restart),
+    setupHints: normalizeStringArray(capabilities.setupHints),
+  };
+}
+
+function normalizeServiceSupports(value) {
+  const supports = toPlainObject(value);
+
+  return {
+    logs: supports.logs === true,
+    health: supports.health === true,
+    restart: supports.restart === true,
+  };
+}
+
+function getServiceManager(service) {
+  return readServiceString(service?.manager, service?.inventory?.manager, service?.runtime?.manager);
+}
+
+function getServiceProcessName(service) {
+  return readServiceString(service?.processName, service?.runtime?.processName, service?.inventory?.processName);
+}
+
+function getServiceLocalPort(service) {
+  return readServiceNumber(service?.inventory?.localPort);
+}
+
+function getServiceLocalUrl(service) {
+  return readServiceString(service?.inventory?.localUrl, service?.health?.localUrl);
+}
+
+function getServiceLocalHealthUrl(service) {
+  return readServiceString(service?.inventory?.localHealthUrl, service?.health?.url);
+}
+
+function getServiceLocalReadinessUrl(service) {
+  return readServiceString(service?.inventory?.localReadinessUrl, service?.health?.readinessUrl);
+}
+
+function getServicePublicUrl(service) {
+  return readServiceString(service?.inventory?.publicUrl, service?.health?.publicUrl);
+}
+
+function getServiceNotes(service) {
+  if (Array.isArray(service?.inventory?.notes)) {
+    return service.inventory.notes.map((note) => String(note || "").trim()).filter(Boolean);
+  }
+
+  const note = readServiceString(service?.inventory?.notes);
+  return note ? [note] : [];
+}
+
+function getServiceRuntimeSummary(service) {
+  if (!service) {
+    return "";
+  }
+
+  const runtime = toPlainObject(service.runtime);
+  const parts = [];
+  const pm2Status = readServiceString(runtime.pm2Status, runtime.status);
+  const uptime = formatDurationSeconds(runtime.uptimeSeconds);
+  const memory = runtime.memoryBytes != null ? formatBytes(runtime.memoryBytes) : "";
+  const restarts = Number.isFinite(Number(runtime.restarts)) ? Number(runtime.restarts) : null;
+
+  if (pm2Status) {
+    parts.push(`PM2 ${pm2Status}`);
+  }
+
+  if (uptime) {
+    parts.push(`uptime ${uptime}`);
+  }
+
+  if (memory) {
+    parts.push(memory);
+  }
+
+  if (restarts != null) {
+    parts.push(`${restarts} restart${restarts === 1 ? "" : "s"}`);
+  }
+
+  return parts.join(" · ");
+}
+
+function getServiceLocalCheckSummary(service) {
+  if (!service) {
+    return "";
+  }
+
+  const localHttp = toPlainObject(service?.health?.checks?.localHttp);
+  const localPort = toPlainObject(service?.health?.checks?.localPort);
+  const parts = [];
+
+  if (localHttp.checkedAt) {
+    const label = localHttp.kind === "health-url" ? "health" : "local HTTP";
+    parts.push(localHttp.ok ? `${label} ok${localHttp.status ? ` · HTTP ${localHttp.status}` : ""}` : `${label} failed`);
+  }
+
+  if (localPort.checkedAt) {
+    const port = localPort.port || getServiceLocalPort(service);
+    parts.push(localPort.ok ? `port ${port} listening` : `port ${port} unavailable`);
+  }
+
+  return parts.join(" · ");
+}
+
+function normalizeServiceItems(items) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+
+  return items
+    .map((item) => {
+      const name = String(item?.name || item?.serviceName || "").trim();
+
+      if (!name) {
+        return null;
+      }
+
+      const backendClassification = toPlainObject(item?.classification);
+      const service = {
+        name,
+        displayName: String(item?.displayName || name).trim() || name,
+        status: String(item?.status || "unknown").trim() || "unknown",
+        host: String(item?.host || "unknown").trim() || "unknown",
+        source: String(item?.source || "memory").trim() || "memory",
+        lastSeen: item?.lastSeen || null,
+        hasLogs: Boolean(item?.hasLogs),
+        manager: readServiceString(item?.manager),
+        processName: readServiceString(item?.processName),
+        serviceGroupKey: readServiceString(item?.serviceGroupKey),
+        serviceGroupLabel: readServiceString(item?.serviceGroupLabel),
+        serviceTypeLabel: readServiceString(item?.serviceTypeLabel),
+        supports: normalizeServiceSupports(item?.supports),
+        inventory: toPlainObject(item?.inventory),
+        metadata: toPlainObject(item?.metadata),
+        health: toPlainObject(item?.health),
+        provides: normalizeServiceRelationArray(item?.provides),
+        dependencies: normalizeServiceRelationArray(item?.dependencies),
+        runtime: toPlainObject(item?.runtime),
+        capabilities: normalizeServiceCapabilities(item?.capabilities),
+      };
+
+      const classificationSetupHints = normalizeStringArray(backendClassification.setupHints);
+      const setupHints = classificationSetupHints.length ? classificationSetupHints : getServiceSetupHints(service);
+      const groupKey = normalizeServiceGroupKey(
+        backendClassification.groupKey ||
+          backendClassification.group ||
+          service.serviceGroupKey ||
+          service.metadata?.serviceGroup,
+      );
+      const type = readServiceString(
+        backendClassification.type,
+        service.serviceTypeLabel,
+        service.metadata?.serviceType,
+      );
+      const severity = readServiceString(backendClassification.severity) || deriveServiceSeverity(service, setupHints);
+
+      return {
+        ...service,
+        classification: {
+          ...backendClassification,
+          groupKey: groupKey || getServiceRailGroupKey(service),
+          groupLabel:
+            readServiceString(backendClassification.groupLabel, service.serviceGroupLabel) ||
+            SERVICE_GROUP_META[groupKey || getServiceRailGroupKey(service)]?.title ||
+            SERVICE_GROUP_META.admin.title,
+          type: type || inferServiceType(service),
+          severity,
+          setupHints,
+          primarySetupHint: readServiceString(backendClassification.primarySetupHint, setupHints[0]) || "",
+        },
+      };
+    })
+    .filter(Boolean)
+    .sort(compareServiceRailOrder);
+}
+
+function getCompactServiceMeta(service) {
+  if (!service) {
+    return "";
+  }
+
+  const parts = [];
+  const type = readServiceString(service?.classification?.type, service?.serviceTypeLabel);
+  const host = readServiceString(service.host);
+  const manager = getServiceManager(service);
+  const port = getServiceLocalPort(service);
+
+  if (type) {
+    parts.push(type);
+  }
+
+  if (host && host !== "unknown") {
+    parts.push(host);
+  } else {
+    parts.push("unknown host");
+  }
+
+  if (manager) {
+    parts.push(manager);
+  }
+
+  if (port) {
+    parts.push(`port ${port}`);
+  }
+
+  return parts.join(" · ");
+}
+
+const SERVICE_SEVERITY_ORDER = {
+  failed: 0,
+  warning: 1,
+  "needs-setup": 2,
+  unknown: 3,
+  running: 4,
+  disabled: 5,
+};
+
+const SERVICE_GROUP_ORDER = ["api", "ui-apps", "admin", "infrastructure"];
+
+const SERVICE_GROUP_META = {
+  api: {
+    title: "API",
+  },
+  "ui-apps": {
+    title: "UI & Apps",
+  },
+  admin: {
+    title: "Admin",
+  },
+  infrastructure: {
+    title: "Infrastructure",
+  },
+};
+
+function normalizeServiceGroupKey(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+
+  if (!normalized) {
+    return "";
+  }
+
+  if (normalized === "ui" || normalized === "app" || normalized === "apps" || normalized === "ui-apps") {
+    return "ui-apps";
+  }
+
+  if (normalized === "infra" || normalized === "infrastructure" || normalized === "database" || normalized === "db") {
+    return "infrastructure";
+  }
+
+  if (normalized === "bridge" || normalized === "control-plane" || normalized === "control") {
+    return "admin";
+  }
+
+  if (normalized === "api" || normalized === "admin") {
+    return normalized;
+  }
+
+  return "";
+}
+
+function getServiceRailGroupKey(service) {
+  const explicitGroupKey = normalizeServiceGroupKey(
+    service?.classification?.groupKey || service?.classification?.group || service?.serviceGroupKey,
+  );
+
+  if (explicitGroupKey) {
+    return explicitGroupKey;
+  }
+
+  const type = String(service?.classification?.type || service?.serviceTypeLabel || inferServiceType(service))
+    .trim()
+    .toLowerCase();
+
+  if (type === "api") {
+    return "api";
+  }
+
+  if (type === "ui" || type === "app" || type === "operator console") {
+    return "ui-apps";
+  }
+
+  if (type === "database" || type === "infrastructure") {
+    return "infrastructure";
+  }
+
+  return "admin";
+}
+
+function summarizeServiceGroup(services) {
+  const serviceItems = normalizeObjectCollection(services);
+  const total = serviceItems.length;
+  const attentionCount = serviceItems.filter((service) => {
+    const severity = service?.classification?.severity || deriveServiceSeverity(service);
+    return severity === "failed" || severity === "warning" || severity === "needs-setup";
+  }).length;
+  const runningCount = serviceItems.filter((service) => {
+    const severity = service?.classification?.severity || deriveServiceSeverity(service);
+    return severity === "running";
+  }).length;
+
+  return [
+    `${total} service${total === 1 ? "" : "s"}`,
+    attentionCount ? `${attentionCount} needs attention` : null,
+    !attentionCount && runningCount ? `${runningCount} running` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function groupServicesForRail(services, selectedServiceName) {
+  const grouped = Object.fromEntries(SERVICE_GROUP_ORDER.map((key) => [key, []]));
+
+  for (const service of normalizeObjectCollection(services)) {
+    const groupKey = getServiceRailGroupKey(service);
+
+    if (!Array.isArray(grouped[groupKey])) {
+      grouped[groupKey] = [];
+    }
+
+    grouped[groupKey].push(service);
+  }
+
+  return SERVICE_GROUP_ORDER.map((key) => {
+    const items = normalizeObjectCollection(grouped[key]);
+
+    return {
+      key,
+      title: SERVICE_GROUP_META[key]?.title || key,
+      services: items,
+      summary: summarizeServiceGroup(items),
+      attentionCount: items.filter((service) => {
+        const severity = service?.classification?.severity || deriveServiceSeverity(service);
+        return severity === "failed" || severity === "warning" || severity === "needs-setup";
+      }).length,
+      containsSelectedService: items.some((service) => service.name === selectedServiceName),
+    };
+  }).filter((group) => group.services.length);
+}
+
+function getServiceCapability(service, capabilityName) {
+  return normalizeServiceCapability(service?.capabilities?.[capabilityName]);
+}
+
+function uniqueHints(values) {
+  return Array.from(new Set(values.map((value) => String(value || "").trim()).filter(Boolean)));
+}
+
+function getServiceSetupHints(service) {
+  const capabilityHints = normalizeStringArray(service?.capabilities?.setupHints);
+
+  if (capabilityHints.length) {
+    return uniqueHints(capabilityHints);
+  }
+
+  return uniqueHints([
+    getServiceCapability(service, "logs").setupHint,
+    getServiceCapability(service, "health").setupHint,
+    String(service?.status || "").trim().toLowerCase() === "pending-env-or-not-started"
+      ? "Pending environment or runtime start"
+      : "",
+  ]);
+}
+
+function inferServiceType(service) {
+  const text = `${service?.name || ""} ${service?.displayName || ""}`.toLowerCase();
+
+  if (!text) {
+    return "Service";
+  }
+
+  if (/postgres|taskmaster-db|\bdb\b|database/.test(text) || service?.metadata?.backend === "postgres") {
+    return "Database";
+  }
+
+  if (/garage-admin|operator console/.test(text)) {
+    return "Operator Console";
+  }
+
+  if (/admin-proxy|control proxy/.test(text)) {
+    return "Control Proxy";
+  }
+
+  if (/node-agent/.test(text)) {
+    return "Node Agent";
+  }
+
+  if (/bridge/.test(text) || (text.includes("aibry-admin") && service?.host === "fedora")) {
+    return "Bridge";
+  }
+
+  if (/scheduler|scheduled|cron/.test(text)) {
+    return "Scheduled Job";
+  }
+
+  if (/worker|reminder/.test(text)) {
+    return "Worker";
+  }
+
+  if (/(^|[-\s])api($|[-\s])/.test(text) || text.endsWith("-api")) {
+    return "API";
+  }
+
+  if (/frontend|landing|web|(^|[-\s])ui($|[-\s])/.test(text) || text.endsWith("-ui")) {
+    return "UI";
+  }
+
+  if (/comparator|app/.test(text)) {
+    return "App";
+  }
+
+  return service?.host === "windows" ? "App" : "Service";
+}
+
+function deriveServiceSeverity(service, setupHints = getServiceSetupHints(service)) {
+  const status = String(service?.status || "unknown").trim().toLowerCase();
+
+  if (/^(disabled|inactive|paused)$/.test(status)) {
+    return "disabled";
+  }
+
+  if (/^(failed|stopped|error|unreachable|offline|crashed|missing)$/.test(status)) {
+    return "failed";
+  }
+
+  if (/^(warning|degraded|partial|timeout|attention|restarting)$/.test(status)) {
+    return "warning";
+  }
+
+  if (status === "pending-env-or-not-started" || status === "needs-setup") {
+    return "needs-setup";
+  }
+
+  if (setupHints.length && status === "unknown") {
+    return "needs-setup";
+  }
+
+  if (/^(running|online|healthy|ok|ready|supported)$/.test(status)) {
+    return "running";
+  }
+
+  return "unknown";
+}
+
+function compareServiceRailOrder(left, right) {
+  const leftSeverity = left?.classification?.severity || deriveServiceSeverity(left);
+  const rightSeverity = right?.classification?.severity || deriveServiceSeverity(right);
+  const leftOrder = SERVICE_SEVERITY_ORDER[leftSeverity] ?? SERVICE_SEVERITY_ORDER.unknown;
+  const rightOrder = SERVICE_SEVERITY_ORDER[rightSeverity] ?? SERVICE_SEVERITY_ORDER.unknown;
+
+  if (leftOrder !== rightOrder) {
+    return leftOrder - rightOrder;
+  }
+
+  return String(left?.displayName || left?.name || "").localeCompare(String(right?.displayName || right?.name || ""));
+}
+
+function capabilityMessage(capability, fallback) {
+  return readServiceString(capability?.reason, capability?.setupHint, fallback);
+}
+
+function actionCapability(service, actionType) {
+  if (actionType === "fetch-logs") {
+    return getServiceCapability(service, "logs");
+  }
+
+  if (actionType === "health-check") {
+    return getServiceCapability(service, "health");
+  }
+
+  if (actionType === "restart-service") {
+    return getServiceCapability(service, "restart");
+  }
+
+  return {};
+}
+
+function actionExecutionDetail(actionType, capability) {
+  if (!capability?.supported) {
+    return capabilityMessage(capability, "Unavailable");
+  }
+
+  if (actionType === "fetch-logs") {
+    return capability.executor === "windows-local" ? "Windows PM2 logs" : "Fedora bridge logs";
+  }
+
+  if (actionType === "health-check") {
+    if (capability.mode === "bridge-health") {
+      return "Bridge health";
+    }
+
+    if (capability.mode === "http") {
+      return "Dedicated endpoint";
+    }
+
+    if (capability.mode === "local-url") {
+      return "Local HTTP reachability";
+    }
+
+    if (capability.mode === "tcp") {
+      return "Local port verification";
+    }
+
+    if (capability.mode === "status-only") {
+      return "Status-only fallback";
+    }
+  }
+
+  return "Run now";
+}
+
+function actionSupportSummary(actionType, capability) {
+  const detail = actionExecutionDetail(actionType, capability);
+  const setupHint = readServiceString(capability?.setupHint);
+
+  if (!capability?.supported) {
+    return detail;
+  }
+
+  return setupHint ? `${detail} · ${setupHint}` : detail;
+}
+
+const ACTION_LABELS = {
+  "fetch-logs": "Fetch logs",
+  "health-check": "Health check",
+  "restart-service": "Restart service",
+};
+
+function actionLabel(actionType) {
+  return ACTION_LABELS[actionType] || actionType || "Action";
+}
+
+function requiresApproval(actionType) {
+  return actionType === "restart-service";
+}
+
+function getApiErrorMessage(data, fallback) {
+  if (!data || typeof data !== "object") {
+    return fallback;
+  }
+
+  const parts = [];
+  if (data.code) {
+    parts.push(data.code);
+  }
+  if (data.serviceName) {
+    parts.push(data.serviceName);
+  }
+  if (data.host) {
+    parts.push(data.host);
+  }
+  if (data.reason) {
+    parts.push(data.reason);
+  }
+  if (data.suggestedSetupHint) {
+    parts.push(data.suggestedSetupHint);
+  }
+  if (data.message) {
+    parts.push(data.message);
+  }
+
+  return parts.length ? parts.join(" · ") : data.error || fallback;
+}
+
+function getUnsupportedRestartMessage(result) {
+  const payload = result?.data || null;
+
+  if (!["restart_unsupported_for_host", "restart_unsupported_service"].includes(payload?.code)) {
+    return "";
+  }
+
+  if (payload.message) {
+    return payload.message;
+  }
+
+  const servicePrefix = payload.serviceName ? `${payload.serviceName}: ` : "";
+  const hostPrefix = payload.host && payload.host !== "unknown" ? `${payload.host}-hosted` : "this";
+
+  return `${servicePrefix}Restart is not supported for ${hostPrefix} service.`;
+}
+
+function getActionResult(actionResult) {
+  const action = actionResult?.action || actionResult;
+  return actionResult?.result || action?.result || {};
+}
+
+function getVerification(result) {
+  const verification = result?.data?.verification;
+
+  if (!verification || typeof verification !== "object") {
+    return null;
+  }
+
+  return verification;
+}
+
+function verificationMethodLabel(method) {
+  if (method === "http") {
+    return "HTTP health";
+  }
+
+  if (method === "pm2") {
+    return "PM2 status";
+  }
+
+  return method || "verification";
+}
+
+function getVerificationSummary(result) {
+  const verification = getVerification(result);
+
+  if (!verification) {
+    return "";
+  }
+
+  const parts = [verificationMethodLabel(verification.method)];
+
+  if (verification.method === "http" && verification.status) {
+    parts.push(`HTTP ${verification.status}`);
+  }
+
+  if (verification.method === "pm2" && verification.pm2Status) {
+    parts.push(`PM2 ${verification.pm2Status}`);
+  }
+
+  if (verification.error) {
+    parts.push(verification.error);
+  }
+
+  return parts.join(" · ");
+}
+
+function VerificationSummary({ result }) {
+  const verification = getVerification(result);
+
+  if (!verification) {
+    return null;
+  }
+
+  return (
+    <div className={`verification-summary ${verification.ok ? "verification-ok" : "verification-failed"}`}>
+      <span className={`status-badge ${verification.ok ? "status-completed" : "status-failed"}`}>
+        {verification.ok ? "verified" : "verify failed"}
+      </span>
+      <span>{getVerificationSummary(result)}</span>
+    </div>
+  );
+}
+
+function getActionResultSummary(actionResult) {
+  if (!actionResult) {
+    return "";
+  }
+
+  const action = actionResult.action || actionResult;
+  const result = getActionResult(actionResult);
+  const unsupportedMessage = getUnsupportedRestartMessage(result);
+
+  if (unsupportedMessage) {
+    return unsupportedMessage;
+  }
+
+  if (action.status === "pending") {
+    return "Action created and waiting for approval.";
+  }
+
+  if (action.status === "approved") {
+    return "Action approved and ready to execute.";
+  }
+
+  if (action.status === "completed") {
+    const verification = getVerification(result);
+    const verificationText = verification
+      ? verification.ok
+        ? "Verification passed."
+        : "Verification failed; restart command completed."
+      : "";
+
+    return [result?.data?.message || "Action completed.", verificationText].filter(Boolean).join(" ");
+  }
+
+  if (action.status === "failed") {
+    return result?.data?.message || result?.error || "Action failed.";
+  }
+
+  return action.status || "";
+}
+
+function getCompactAuditSummary(entry) {
+  const summary = getActionResultSummary(entry);
+
+  if (summary) {
+    return summary;
+  }
+
+  const result = getActionResult(entry);
+  return result?.data?.message || result?.error || "";
+}
+
+function formatActionResultClipboard(actionResult) {
+  if (!actionResult) {
+    return "";
+  }
+
+  const action = actionResult.action || actionResult;
+  const result = getActionResult(actionResult);
+  const lines = [
+    "Garage Admin V2 action result",
+    `Action: ${actionLabel(action.actionType || result.actionType)}`,
+    `Target: ${action.target || result.target || "unknown"}`,
+    `Status: ${action.status || result.status || "unknown"}`,
+  ];
+  const createdAt = action.createdAt || result.executedAt;
+  const summary = getActionResultSummary(actionResult);
+
+  if (createdAt) {
+    lines.push(`Time: ${formatCreatedAt(createdAt)}`);
+  }
+
+  if (summary) {
+    lines.push(`Summary: ${summary}`);
+  }
+
+  lines.push("", "Result:", formatAuditValue(result) || "None");
+  return lines.join("\n");
+}
+
+function canApproveAction(entry) {
+  return entry?.status === "pending" && requiresApproval(entry.actionType);
+}
+
+function canExecuteAction(entry) {
+  return entry?.status === "approved";
+}
+
+function actionMatchesService(actionResult, serviceName) {
+  if (!actionResult || !serviceName) {
+    return false;
+  }
+
+  const action = actionResult.action || actionResult;
+  return [action?.target, action?.serviceName, actionResult?.serviceName].some(
+    (value) => String(value || "").trim() === serviceName,
+  );
+}
+
+function canRestartService(service) {
+  if (!service) {
+    return false;
+  }
+
+  const restartCapability = service.capabilities?.restart;
+  if (typeof restartCapability === "boolean") {
+    return restartCapability;
+  }
+
+  if (restartCapability && typeof restartCapability === "object" && typeof restartCapability.supported === "boolean") {
+    return restartCapability.supported;
+  }
+
+  if (typeof service?.supports?.restart === "boolean") {
+    return service.supports.restart;
+  }
+
+  return false;
+}
+
+const ACTION_RISK_PROFILES = {
+  "fetch-logs": {
+    label: "Safe",
+    riskLevel: "safe",
+    detail: "Read-only log retrieval.",
+  },
+  "health-check": {
+    label: "Safe",
+    riskLevel: "safe",
+    detail: "Read-only health probe.",
+  },
+  "restart-service": {
+    label: "Caution",
+    riskLevel: "caution",
+    detail: "Requires approval and changes runtime state.",
+  },
+};
+
+function getActionRiskProfile(actionType) {
+  return (
+    ACTION_RISK_PROFILES[actionType] || {
+      label: "Unknown",
+      riskLevel: "unknown",
+      detail: "Review before running.",
+    }
+  );
+}
+
+function getHealthStatusSummary(healthResult) {
+  if (!healthResult) {
+    return "No health result yet.";
+  }
+
+  if (healthResult.mode === "bridge-health") {
+    return `${healthResult.ok ? "Bridge OK" : "Bridge attention"}${
+      healthResult.status ? ` · HTTP ${healthResult.status}` : ""
+    }`;
+  }
+
+  if (healthResult.mode === "local-url") {
+    return `${healthResult.ok ? "Reachable" : "Reachability failed"}${
+      healthResult.status ? ` · HTTP ${healthResult.status}` : ""
+    }`;
+  }
+
+  if (healthResult.mode === "tcp") {
+    return healthResult.ok ? "Port reachable" : "Port check failed";
+  }
+
+  if (healthResult.mode === "status-only") {
+    const pm2Status = healthResult.verification?.pm2Status ? ` · PM2 ${healthResult.verification.pm2Status}` : "";
+    return `${healthResult.ok ? "Status only" : "Status alert"}${pm2Status}`;
+  }
+
+  return `${healthResult.ok ? "OK" : "Attention"}${healthResult.status ? ` · HTTP ${healthResult.status}` : ""}`;
+}
+
+function getRestartImpactText(service, restartSupported) {
+  if (!service || !restartSupported) {
+    return "Restart is not supported for this service from this executor.";
+  }
+
+  if (String(service.host || "").toLowerCase() === "fedora") {
+    return "Brief interruption of Fedora control-plane service. Logs remain available through supported paths if restart succeeds.";
+  }
+
+  if (String(getServiceManager(service) || "").toLowerCase() === "pm2") {
+    return "Brief interruption of the Windows-hosted PM2 process. Verification should confirm process/health after restart.";
+  }
+
+  return "Brief interruption of the selected service while the runtime restarts.";
+}
+
+function getRestartRecoveryText() {
+  return "No files or configuration are changed by this action. If restart fails, fetch logs and run health check before retrying.";
+}
+
+function getRestartConfirmationText(restartSupported) {
+  return restartSupported
+    ? "Operator approval is required before execution; verify the target service and expected interruption first."
+    : "Restart is blocked for this service from the current executor.";
+}
+
+function getRestartLifecycleText(latestRestartAction, restartSupported, requestedBy) {
+  if (latestRestartAction?.status) {
+    return formatStatusLabel(latestRestartAction.status);
+  }
+
+  if (!restartSupported) {
+    return "Unavailable";
+  }
+
+  if (requestedBy) {
+    return "Draft";
+  }
+
+  return "Awaiting request";
+}
+
+function formatBadgeLabel(value) {
+  const text = String(value || "").trim();
+
+  if (!text) {
+    return "Unknown";
+  }
+
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+const AUDIT_FRESH_WINDOW_MS = 15 * 60 * 1000;
+
+const STATUS_LABELS = {
+  ok: "OK",
+  supported: "Available",
+  unsupported: "Unavailable",
+  "pending-env-or-not-started": "Needs setup",
+};
+
+function formatStatusLabel(value) {
+  const normalized = String(value || "unknown").trim().toLowerCase();
+
+  if (!normalized) {
+    return "Unknown";
+  }
+
+  if (STATUS_LABELS[normalized]) {
+    return STATUS_LABELS[normalized];
+  }
+
+  return normalized
+    .split(/[_-]+/)
+    .filter(Boolean)
+    .map((part) => {
+      if (part === "pm2") {
+        return "PM2";
+      }
+
+      return `${part.charAt(0).toUpperCase()}${part.slice(1)}`;
+    })
+    .join(" ");
+}
+
+function statusClassName(value) {
+  return `status-${String(value || "unknown")
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")}`;
+}
+
+function isAuditEntryFresh(entry, now = Date.now()) {
+  const createdAt = new Date(entry?.createdAt).getTime();
+
+  if (!Number.isFinite(createdAt)) {
+    return false;
+  }
+
+  return now - createdAt <= AUDIT_FRESH_WINDOW_MS;
+}
+
+export default function App() {
+  const [incidents, setIncidents] = useState([]);
+  const [services, setServices] = useState([]);
+  const [audit, setAudit] = useState([]);
+  const [selectedService, setSelectedService] = useState(null);
+  const [selectedIncidentId, setSelectedIncidentId] = useState(null);
+  const [logs, setLogs] = useState(null);
+  const [logsFetchedAt, setLogsFetchedAt] = useState(null);
+  const [logFilter, setLogFilter] = useState("");
+  const [logAlertOnly, setLogAlertOnly] = useState(false);
+  const [logCopyStatus, setLogCopyStatus] = useState("");
+  const [resultCopyStatus, setResultCopyStatus] = useState("");
+  const [logsArchive, setLogsArchive] = useState([]);
+  const [logsDisposition, setLogsDisposition] = useState(null);
+  const [healthOutput, setHealthOutput] = useState(null);
+  const [healthMeta, setHealthMeta] = useState(null);
+  const [healthArchive, setHealthArchive] = useState([]);
+  const [healthDisposition, setHealthDisposition] = useState(null);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [initialError, setInitialError] = useState(null);
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [logsError, setLogsError] = useState(null);
+  const [showRestartForm, setShowRestartForm] = useState(false);
+  const [restartForm, setRestartForm] = useState({
+    requestedBy: "",
+    approvedBy: "",
+    reason: "",
+  });
+  const [restartSubmitting, setRestartSubmitting] = useState(false);
+  const [restartResult, setRestartResult] = useState(null);
+  const [restartError, setRestartError] = useState(null);
+  const [actionBusyId, setActionBusyId] = useState(null);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditError, setAuditError] = useState(null);
+  const [auditFilterMode, setAuditFilterMode] = useState("service");
+  const [expandedAuditIds, setExpandedAuditIds] = useState([]);
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatError, setChatError] = useState(null);
+  const [messages, setMessages] = useState([
+    {
+      id: "welcome",
+      role: "system",
+      content: "Garage Admin V2 connected. Select a service to view logs.",
+    },
+  ]);
+  const [input, setInput] = useState("");
+  const opsGridRef = useRef(null);
+  const skipNextLayoutPersistenceRef = useRef(false);
+  const [rightLayout, setRightLayout] = useState(loadInitialRightLayout);
+  const [rightPanelResizing, setRightPanelResizing] = useState(false);
+  const rightPanelSplit = clampRightPanelSplit(Number(rightLayout.splitRatios?.right));
+  const rightPanelOrder = ENABLE_EXPERIMENTAL_LAYOUT_CUSTOMIZATION
+    ? normalizeRightPanelOrder(rightLayout.zones?.right)
+    : [...DEFAULT_RIGHT_PANEL_ORDER];
+  const rightPanelGridAreas = {
+    [rightPanelOrder[0]]: "right-top",
+    [rightPanelOrder[1]]: "right-bottom",
+  };
+  const topRightPanelLabel = RIGHT_PANEL_CARD_LABELS[rightPanelOrder[0]] || "Top panel";
+  const bottomRightPanelLabel = RIGHT_PANEL_CARD_LABELS[rightPanelOrder[1]] || "Bottom panel";
+
+  useEffect(() => {
+    if (skipNextLayoutPersistenceRef.current) {
+      skipNextLayoutPersistenceRef.current = false;
+      return;
+    }
+
+    const normalizedLayout = normalizeExperimentalLayout(rightLayout);
+
+    if (ENABLE_EXPERIMENTAL_LAYOUT_CUSTOMIZATION) {
+      saveExperimentalLayout(normalizedLayout);
+    } else {
+      saveRightPanelSplit(normalizedLayout.splitRatios.right);
+    }
+  }, [rightLayout]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      const height = opsGridRef.current?.getBoundingClientRect().height || 0;
+      setRightPanelSplit((current) => clampRightPanelSplit(current, height));
+    };
+
+    handleResize();
+    window.addEventListener("resize", handleResize);
+
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  useEffect(() => {
+    document.body.classList.toggle("is-resizing-right-stack", rightPanelResizing);
+
+    return () => document.body.classList.remove("is-resizing-right-stack");
+  }, [rightPanelResizing]);
+
+  function setRightPanelSplitFromClientY(clientY) {
+    const grid = opsGridRef.current;
+
+    if (!grid) {
+      return;
+    }
+
+    const rect = grid.getBoundingClientRect();
+    const availableHeight = Math.max(rect.height - RIGHT_PANEL_RESIZER_PX, 1);
+    const rawSplit = (clientY - rect.top - RIGHT_PANEL_RESIZER_PX / 2) / availableHeight;
+
+    setRightPanelSplit(clampRightPanelSplit(rawSplit, rect.height));
+  }
+
+  function setRightPanelSplit(nextSplit) {
+    setRightLayout((current) => {
+      const normalizedLayout = normalizeExperimentalLayout(current);
+      const currentSplit = normalizedLayout.splitRatios.right;
+      const resolvedSplit = typeof nextSplit === "function" ? nextSplit(currentSplit) : nextSplit;
+
+      return {
+        ...normalizedLayout,
+        splitRatios: {
+          ...normalizedLayout.splitRatios,
+          right: clampRightPanelSplit(resolvedSplit),
+        },
+      };
+    });
+  }
+
+  function moveRightPanelCard(cardId, direction) {
+    setRightLayout((current) => {
+      const normalizedLayout = normalizeExperimentalLayout(current);
+
+      return {
+        ...normalizedLayout,
+        zones: {
+          ...normalizedLayout.zones,
+          right: moveCardInOrder(normalizedLayout.zones.right, cardId, direction),
+        },
+      };
+    });
+  }
+
+  function handleResetLayout() {
+    skipNextLayoutPersistenceRef.current = true;
+    removeSavedLayoutPreferences();
+    setRightLayout(createDefaultExperimentalLayout());
+  }
+
+  function handleRightResizerPointerDown(event) {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    setRightPanelResizing(true);
+    setRightPanelSplitFromClientY(event.clientY);
+  }
+
+  function handleRightResizerPointerMove(event) {
+    if (!rightPanelResizing) {
+      return;
+    }
+
+    event.preventDefault();
+    setRightPanelSplitFromClientY(event.clientY);
+  }
+
+  function handleRightResizerPointerEnd(event) {
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+
+    setRightPanelResizing(false);
+  }
+
+  function nudgeRightPanelSplit(delta) {
+    const height = opsGridRef.current?.getBoundingClientRect().height || 0;
+    setRightPanelSplit((current) => clampRightPanelSplit(current + delta, height));
+  }
+
+  function handleRightResizerKeyDown(event) {
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      nudgeRightPanelSplit(-0.04);
+    } else if (event.key === "ArrowDown") {
+      event.preventDefault();
+      nudgeRightPanelSplit(0.04);
+    } else if (event.key === "PageUp") {
+      event.preventDefault();
+      nudgeRightPanelSplit(-0.1);
+    } else if (event.key === "PageDown") {
+      event.preventDefault();
+      nudgeRightPanelSplit(0.1);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      nudgeRightPanelSplit(-1);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      nudgeRightPanelSplit(1);
+    }
+  }
+
+  useEffect(() => {
+    async function load() {
+      setInitialLoading(true);
+      setInitialError(null);
+
+      try {
+        const [incidentsRes, servicesRes, auditRes] = await Promise.all([
+          fetch("/api/memory/incidents"),
+          fetch("/api/services"),
+          fetch("/api/memory/audit"),
+        ]);
+
+        if (!incidentsRes.ok || !servicesRes.ok || !auditRes.ok) {
+          throw new Error("Failed to load Garage Admin context");
+        }
+
+        const incidentsData = await incidentsRes.json();
+        const servicesData = await servicesRes.json();
+        const auditData = await auditRes.json();
+        const incidentItems = normalizeObjectCollection(incidentsData.items);
+        const serviceItems = normalizeServiceItems(servicesData.items || []);
+
+        setIncidents(incidentItems);
+        setAudit(normalizeObjectCollection(auditData.items));
+        setServices(serviceItems);
+        setSelectedService((current) => current || serviceItems[0]?.name || null);
+      } catch (error) {
+        setInitialError(error.message);
+      } finally {
+        setInitialLoading(false);
+      }
+    }
+
+    load().catch(() => {});
+  }, []);
+
+  function applyServicePayload(payload) {
+    const serviceItems = normalizeServiceItems(payload?.items || []);
+    setServices(serviceItems);
+    setSelectedService((current) => {
+      if (current && serviceItems.some((service) => service.name === current)) {
+        return current;
+      }
+
+      return serviceItems[0]?.name || null;
+    });
+    return serviceItems;
+  }
+
+  async function refreshServices() {
+    const servicesRes = await fetch("/api/services");
+    const servicesData = await servicesRes.json();
+
+    if (!servicesRes.ok || !servicesData.ok) {
+      throw new Error(servicesData.error || "Failed to refresh services");
+    }
+
+    return applyServicePayload(servicesData);
+  }
+
+  async function refreshAudit() {
+    setAuditLoading(true);
+    setAuditError(null);
+
+    try {
+      const auditRes = await fetch("/api/memory/audit");
+      if (!auditRes.ok) {
+        throw new Error("Failed to refresh audit");
+      }
+
+      const auditData = await auditRes.json();
+      setAudit(normalizeObjectCollection(auditData.items));
+    } catch (error) {
+      setAuditError(error.message);
+      throw error;
+    } finally {
+      setAuditLoading(false);
+    }
+  }
+
+  const incidentItems = normalizeObjectCollection(incidents);
+  const serviceItems = normalizeObjectCollection(services);
+  const auditItems = normalizeObjectCollection(audit);
+  const logsArchiveItems = normalizeObjectCollection(logsArchive);
+  const expandedAuditItemIds = normalizeStringArray(expandedAuditIds);
+  const chatMessages = normalizeObjectCollection(messages);
+  const selectedIncident = incidentItems.find((incident) => incident.id === selectedIncidentId) || null;
+  const selectedServiceRecord = serviceItems.find((service) => service.name === selectedService) || null;
+
+  useEffect(() => {
+    if (!selectedService) {
+      setLogs(null);
+      setLogsFetchedAt(null);
+      setLogFilter("");
+      setLogAlertOnly(false);
+      setLogCopyStatus("");
+      setResultCopyStatus("");
+      setLogsDisposition(null);
+      setLogsError(null);
+      setLogsLoading(false);
+      setShowRestartForm(false);
+      setRestartResult(null);
+      setRestartError(null);
+      return;
+    }
+
+    const logCapability = actionCapability(selectedServiceRecord, "fetch-logs");
+
+    if (selectedServiceRecord && logCapability.supported === false) {
+      setLogs(null);
+      setLogsFetchedAt(null);
+      setLogFilter("");
+      setLogAlertOnly(false);
+      setLogCopyStatus("");
+      setResultCopyStatus("");
+      setLogsDisposition(null);
+      setLogsLoading(false);
+      setLogsError(capabilityMessage(logCapability, "Logs are unavailable for this service."));
+      return;
+    }
+
+    const controller = new AbortController();
+    let isCurrentRequest = true;
+
+    async function loadLogs() {
+      setLogsLoading(true);
+      setLogsError(null);
+      setLogs(null);
+      setLogsFetchedAt(null);
+      setLogFilter("");
+      setLogAlertOnly(false);
+      setLogCopyStatus("");
+      setResultCopyStatus("");
+      setLogsDisposition(null);
+
+      try {
+        const res = await fetch(`/api/services/${encodeURIComponent(selectedService)}/logs`, {
+          signal: controller.signal,
+        });
+        const data = await res.json();
+
+        if (!res.ok || !data.ok) {
+          throw new Error(getApiErrorMessage(data, "Failed to load service logs"));
+        }
+
+        if (isCurrentRequest) {
+          setLogs(typeof data.logs === "string" ? data.logs : getLogText(data));
+          setLogsFetchedAt(new Date().toISOString());
+          setLogsDisposition(null);
+        }
+      } catch (error) {
+        if (error.name === "AbortError" || !isCurrentRequest) {
+          return;
+        }
+
+        setLogs(null);
+        setLogsError(error.message);
+      } finally {
+        if (isCurrentRequest) {
+          setLogsLoading(false);
+        }
+      }
+    }
+
+    loadLogs().catch(() => {});
+
+    return () => {
+      isCurrentRequest = false;
+      controller.abort();
+    };
+  }, [selectedService, selectedServiceRecord]);
+
+  function handleServiceSelect(serviceName) {
+    setSelectedService(serviceName);
+  }
+
+  function handleIncidentSelect(incident) {
+    setSelectedIncidentId(incident.id);
+    setSelectedService(incident.serviceName || null);
+  }
+
+  function handleRestartFormChange(event) {
+    const { name, value } = event.target;
+    setRestartForm((current) => ({
+      ...current,
+      [name]: value,
+    }));
+  }
+
+  function handleRestartCancel() {
+    setShowRestartForm(false);
+    setRestartSubmitting(false);
+    setRestartError(null);
+    setRestartResult(null);
+    setRestartForm({
+      requestedBy: "",
+      approvedBy: "",
+      reason: "",
+    });
+  }
+
+  async function createAction(actionType, options = {}) {
+    if (!selectedService) {
+      return;
+    }
+
+    setRestartSubmitting(true);
+    setRestartError(null);
+    setRestartResult(null);
+
+    try {
+      const requestedBy = restartForm.requestedBy.trim();
+      if (!requestedBy) {
+        throw new Error("requestedBy is required to create an action.");
+      }
+
+      const response = await fetch("/api/actions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          actionType,
+          serviceName: selectedService,
+          host: selectedServiceRecord?.host || "unknown",
+          requestedBy,
+          reason: options.reason || "",
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.ok) {
+        throw new Error(getApiErrorMessage(data, "Action request failed"));
+      }
+
+      setRestartResult(data);
+      await refreshAudit();
+    } catch (error) {
+      setRestartError(error.message);
+    } finally {
+      setRestartSubmitting(false);
+    }
+  }
+
+  async function handleRestartSubmit(event) {
+    event.preventDefault();
+    await createAction("restart-service", {
+      reason: restartForm.reason,
+    });
+  }
+
+  async function approveAction(entry, event) {
+    event?.stopPropagation();
+    const approvedBy = restartForm.approvedBy.trim();
+
+    if (!approvedBy) {
+      setRestartError("approvedBy is required to approve an action.");
+      return;
+    }
+
+    setActionBusyId(entry.id);
+    setRestartError(null);
+    setRestartResult(null);
+
+    try {
+      const response = await fetch(`/api/actions/${encodeURIComponent(entry.id)}/approve`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ approvedBy }),
+      });
+      const data = await response.json();
+
+      if (!response.ok || !data.ok) {
+        throw new Error(getApiErrorMessage(data, "Action approval failed"));
+      }
+
+      setRestartResult(data);
+      await refreshAudit();
+    } catch (error) {
+      setRestartError(error.message);
+    } finally {
+      setActionBusyId(null);
+    }
+  }
+
+  async function applyExecutionResult(entry, data) {
+    if (data.services?.items) {
+      applyServicePayload(data.services);
+    } else {
+      await refreshServices();
+    }
+
+    if (entry.actionType === "fetch-logs" && typeof data.output?.logs === "string") {
+      setLogs(data.output.logs);
+      setLogsFetchedAt(new Date().toISOString());
+      setLogCopyStatus("");
+      setLogsDisposition(null);
+      setLogsError(null);
+    }
+
+    if (entry.actionType === "health-check") {
+      const nextHealthOutput = data.output?.health || data.result?.data || null;
+
+      setHealthOutput(
+        nextHealthOutput
+          ? {
+              ...nextHealthOutput,
+              ok: nextHealthOutput.ok ?? data.result?.ok ?? false,
+              error: nextHealthOutput.error || data.result?.error || null,
+              baseUrl: data.result?.baseUrl || nextHealthOutput.baseUrl || null,
+            }
+          : null,
+      );
+      setHealthMeta({
+        actionId: data.actionId || entry.id,
+        receivedAt: new Date().toISOString(),
+        status: data.status || data.action?.status || entry.status,
+      });
+      setHealthDisposition(null);
+    }
+
+    setRestartResult(data);
+    await refreshAudit();
+  }
+
+  async function runReadOnlyAction(actionType) {
+    if (!selectedService) {
+      return;
+    }
+
+    const capability = actionCapability(selectedServiceRecord, actionType);
+
+    if (capability.supported === false) {
+      setRestartError(capabilityMessage(capability, `${actionLabel(actionType)} is unavailable for this service.`));
+      return;
+    }
+
+    setRestartSubmitting(true);
+    setRestartError(null);
+    setRestartResult(null);
+
+    try {
+      const requestedBy = restartForm.requestedBy.trim();
+      if (!requestedBy) {
+        throw new Error("requestedBy is required to run an action.");
+      }
+
+      const createResponse = await fetch("/api/actions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          actionType,
+          serviceName: selectedService,
+          host: selectedServiceRecord?.host || "unknown",
+          requestedBy,
+          reason: "",
+        }),
+      });
+      const created = await createResponse.json();
+
+      if (!createResponse.ok || !created.ok) {
+        throw new Error(getApiErrorMessage(created, "Action request failed"));
+      }
+
+      const action = created.action || {
+        id: created.actionId,
+        actionType,
+        target: selectedService,
+        status: created.status,
+      };
+
+      setRestartResult(created);
+      setActionBusyId(action.id);
+
+      const executeResponse = await fetch(`/api/actions/${encodeURIComponent(action.id)}/execute`, {
+        method: "POST",
+      });
+      const executed = await executeResponse.json();
+
+      if (!executeResponse.ok || !executed.ok) {
+        throw new Error(getApiErrorMessage(executed, "Action execution failed"));
+      }
+
+      await applyExecutionResult(action, executed);
+    } catch (error) {
+      setRestartError(error.message);
+      await refreshAudit().catch(() => {});
+    } finally {
+      setActionBusyId(null);
+      setRestartSubmitting(false);
+    }
+  }
+
+  async function executeAction(entry, event) {
+    event?.stopPropagation();
+    setActionBusyId(entry.id);
+    setRestartError(null);
+    setRestartResult(null);
+
+    try {
+      const response = await fetch(`/api/actions/${encodeURIComponent(entry.id)}/execute`, {
+        method: "POST",
+      });
+      const data = await response.json();
+
+      if (!response.ok || !data.ok) {
+        throw new Error(getApiErrorMessage(data, "Action execution failed"));
+      }
+
+      await applyExecutionResult(entry, data);
+    } catch (error) {
+      setRestartError(error.message);
+    } finally {
+      setActionBusyId(null);
+    }
+  }
+
+  function toggleAuditItem(id) {
+    setExpandedAuditIds((current) => {
+      const currentIds = normalizeStringArray(current);
+      const normalizedId = String(id || "").trim();
+
+      if (!normalizedId) {
+        return currentIds;
+      }
+
+      return currentIds.includes(normalizedId)
+        ? currentIds.filter((itemId) => itemId !== normalizedId)
+        : [...currentIds, normalizedId];
+    });
+  }
+
+  function handleAuditItemKeyDown(entry, event) {
+    if (event.target !== event.currentTarget) {
+      return;
+    }
+
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+
+    event.preventDefault();
+    toggleAuditItem(entry.id);
+  }
+
+  const sortedAudit = [...auditItems].sort(
+    (left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
+  );
+  const selectedServiceAudit = selectedService
+    ? sortedAudit.filter((entry) => entry.target === selectedService)
+    : [];
+
+  const visibleAudit =
+    selectedService && auditFilterMode === "service"
+      ? sortedAudit.filter((entry) => entry.target === selectedService)
+      : sortedAudit;
+
+  const openActionCount = sortedAudit.filter((entry) =>
+    ["pending", "approved", "executing"].includes(entry.status),
+  ).length;
+  const logLineCount = countLogLines(logs);
+  const hasLogs = typeof logs === "string" && logs.length > 0;
+  const logFilterTerm = logFilter.trim().toLowerCase();
+  const logLines = hasLogs ? logs.split(/\r?\n/) : [];
+  const hasActiveLogFilter = Boolean(logFilterTerm) || logAlertOnly;
+  const visibleLogLines = logLines.filter((line) => {
+    const matchesText = !logFilterTerm || line.toLowerCase().includes(logFilterTerm);
+    const matchesAlert = !logAlertOnly || ["log-critical", "log-error", "log-warning"].includes(getLogTone(line));
+    return matchesText && matchesAlert;
+  });
+  const visibleLogText = visibleLogLines.join("\n");
+  const logSignals = getLogSignals(logs);
+  const hasHealthOutput = healthOutput !== null;
+  const selectedServiceHost = selectedServiceRecord?.host || "unknown";
+  const selectedServiceType = selectedServiceRecord?.classification?.type || inferServiceType(selectedServiceRecord);
+  const selectedServiceSeverity =
+    selectedServiceRecord?.classification?.severity || deriveServiceSeverity(selectedServiceRecord);
+  const selectedServiceSetupHints = selectedServiceRecord?.classification?.setupHints || getServiceSetupHints(selectedServiceRecord);
+  const selectedServicePrimarySetupHint = selectedServiceRecord?.classification?.primarySetupHint || selectedServiceSetupHints[0] || "";
+  const selectedServiceLogsCapability = actionCapability(selectedServiceRecord, "fetch-logs");
+  const selectedServiceHealthCapability = actionCapability(selectedServiceRecord, "health-check");
+  const selectedServiceRestartCapability = actionCapability(selectedServiceRecord, "restart-service");
+  const selectedServiceCanFetchLogs = selectedServiceLogsCapability.supported === true;
+  const selectedServiceCanRunHealthCheck = selectedServiceHealthCapability.supported === true;
+  const selectedServiceCanRestart = canRestartService(selectedServiceRecord);
+  const selectedServiceStatus = selectedServiceRecord?.status || "unknown";
+  const selectedServiceManager = getServiceManager(selectedServiceRecord);
+  const selectedServiceProcessName = getServiceProcessName(selectedServiceRecord);
+  const selectedServicePort = getServiceLocalPort(selectedServiceRecord);
+  const selectedServiceLocalUrl = getServiceLocalUrl(selectedServiceRecord);
+  const selectedServiceLocalHealthUrl = getServiceLocalHealthUrl(selectedServiceRecord);
+  const selectedServiceLocalReadinessUrl = getServiceLocalReadinessUrl(selectedServiceRecord);
+  const selectedServicePublicUrl = getServicePublicUrl(selectedServiceRecord);
+  const selectedServiceRuntimeSummary = getServiceRuntimeSummary(selectedServiceRecord);
+  const selectedServiceCheckSummary = getServiceLocalCheckSummary(selectedServiceRecord);
+  const selectedServiceNotes = getServiceNotes(selectedServiceRecord);
+  const selectedServiceRelationshipSections = buildServiceRelationshipSections(selectedServiceRecord, serviceItems);
+  const latestVisibleAction = visibleAudit[0] || null;
+  const latestResultSource = restartResult || latestVisibleAction;
+  const latestResultClipboardText = formatActionResultClipboard(latestResultSource);
+  const latestActionText = restartResult
+    ? getActionResultSummary(restartResult)
+    : latestVisibleAction
+      ? `${actionLabel(latestVisibleAction.actionType)} ${latestVisibleAction.status}`
+      : "No action result yet.";
+  const latestActionStatus = restartResult?.status || latestVisibleAction?.status || "unknown";
+  const latestRestartAction =
+    visibleAudit.find((entry) => entry.actionType === "restart-service") || null;
+  const latestDiagnosisAudit = selectedServiceAudit[0] || null;
+  const latestDiagnosisAction = actionMatchesService(restartResult, selectedService)
+    ? restartResult
+    : latestDiagnosisAudit;
+  const latestDiagnosisActionText = latestDiagnosisAction
+    ? getActionResultSummary(latestDiagnosisAction) ||
+      `${actionLabel(latestDiagnosisAction.action?.actionType || latestDiagnosisAction.actionType)} ${
+        latestDiagnosisAction.action?.status || latestDiagnosisAction.status || "unknown"
+      }`
+    : "No action result yet.";
+  const restartState = latestRestartAction?.status || (selectedServiceCanRestart ? "supported" : "unsupported");
+  const restartStateText = latestRestartAction
+    ? `${actionLabel(latestRestartAction.actionType)} · ${formatCreatedAt(latestRestartAction.createdAt)}`
+    : selectedServiceCanRestart
+      ? "Available with approval."
+      : capabilityMessage(selectedServiceRestartCapability, "Unavailable for this service.");
+  const healthStatusText = getHealthStatusSummary(healthOutput);
+  const outputAlertSummary =
+    logSignals.alertCount || (hasHealthOutput && !healthOutput.ok)
+      ? [
+          logSignals.alertCount ? logSignals.summary : null,
+          hasHealthOutput && !healthOutput.ok ? "Health check needs attention." : null,
+        ]
+          .filter(Boolean)
+          .join(" ")
+      : "No current output alerts.";
+  const logEmptyMessage = logsDisposition
+    ? `Logs ${logsDisposition.type} from this view at ${formatCreatedAt(logsDisposition.at)}. Fetch logs or reselect the service to load fresh output.`
+    : selectedService
+      ? "No logs returned for the selected service."
+      : "Select a service to view logs.";
+  const filteredLogEmptyMessage = hasLogs && hasActiveLogFilter ? "No log lines match the current filters." : logEmptyMessage;
+  const healthEmptyMessage = healthDisposition
+    ? `Health output ${healthDisposition.type} from this view at ${formatCreatedAt(healthDisposition.at)}. Execute a health-check action to show fresh output.`
+    : "No health-check output is visible yet.";
+  const selectedServiceHeaderSummary = selectedServiceRecord
+    ? [
+        selectedServiceHost !== "unknown" ? `${selectedServiceHost} host` : "Unknown host",
+        selectedServiceManager,
+        selectedServicePort ? `port ${selectedServicePort}` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : "Select a service to inspect logs and actions.";
+  const signalAlertCount = logSignals.alertCount + (hasHealthOutput && !healthOutput.ok ? 1 : 0) + (latestActionStatus === "failed" ? 1 : 0);
+  const restartApprovalDetails = selectedServiceRecord
+    ? compactDetailItems([
+        {
+          label: "Action",
+          value: actionLabel("restart-service"),
+        },
+        {
+          label: "Target",
+          value: selectedServiceRecord.displayName,
+        },
+        {
+          label: "Host / runtime",
+          value: [selectedServiceHost, selectedServiceManager || selectedServiceProcessName || "unknown runtime"]
+            .filter(Boolean)
+            .join(" · "),
+        },
+        {
+          label: "Risk level",
+          value: getActionRiskProfile("restart-service").label,
+        },
+        {
+          label: "Requested by",
+          value: restartForm.requestedBy.trim() || latestRestartAction?.requestedBy || "Not set",
+        },
+        {
+          label: "Approved by",
+          value: restartForm.approvedBy.trim() || latestRestartAction?.approvedBy || "Not set",
+        },
+        {
+          label: "Approval required",
+          value: requiresApproval("restart-service") ? "Yes" : "No",
+        },
+        {
+          label: "Expected impact",
+          value: getRestartImpactText(selectedServiceRecord, selectedServiceCanRestart),
+        },
+        {
+          label: "Rollback / recovery",
+          value: getRestartRecoveryText(),
+        },
+        {
+          label: "Confirmation",
+          value: getRestartConfirmationText(selectedServiceCanRestart),
+        },
+        {
+          label: "Lifecycle state",
+          value: getRestartLifecycleText(latestRestartAction, selectedServiceCanRestart, restartForm.requestedBy.trim()),
+        },
+      ])
+    : [];
+  const signalDisclosureDefaultOpen = Boolean(selectedServiceRecord);
+  const signalDetailItems = selectedServiceRecord
+    ? compactDetailItems([
+        {
+          label: "Alerts",
+          value: signalAlertCount ? `${signalAlertCount} signal${signalAlertCount === 1 ? "" : "s"}` : "None",
+        },
+        {
+          label: "Logs",
+          value: logSignals.summary,
+        },
+        {
+          label: "Health",
+          value: healthStatusText,
+        },
+        {
+          label: "Last fetch",
+          value: logsFetchedAt ? formatCreatedAt(logsFetchedAt) : "Not fetched",
+        },
+        {
+          label: "Action",
+          value: latestActionText,
+        },
+        {
+          label: "Active actions",
+          value: `${openActionCount} active action${openActionCount === 1 ? "" : "s"}`,
+        },
+        {
+          label: "Restart",
+          value: selectedServiceCanRestart ? "Available with approval." : "Unavailable for this service.",
+        },
+      ])
+    : [];
+  const serviceDetailItems = selectedServiceRecord
+    ? compactDetailItems([
+        {
+          label: "Host",
+          value: selectedServiceHost !== "unknown" ? selectedServiceHost : "Unknown",
+        },
+        {
+          label: "Type",
+          value: selectedServiceType,
+        },
+        {
+          label: "Severity",
+          value: formatStatusLabel(selectedServiceSeverity),
+        },
+        {
+          label: "Manager",
+          value: selectedServiceManager || "Not mapped.",
+        },
+        {
+          label: "Process",
+          value: selectedServiceProcessName || "Not mapped.",
+        },
+        {
+          label: "Runtime",
+          value: selectedServiceRuntimeSummary || "No runtime summary yet.",
+        },
+        {
+          label: "Local",
+          value:
+            selectedServiceCheckSummary ||
+            selectedServiceLocalHealthUrl ||
+            selectedServiceLocalUrl ||
+            (selectedServicePort ? `port ${selectedServicePort}` : "Not mapped."),
+        },
+        selectedServiceLocalReadinessUrl
+          ? {
+              label: "Readiness",
+              value: selectedServiceLocalReadinessUrl,
+            }
+          : null,
+        {
+          label: "Public",
+          value: selectedServicePublicUrl || "Not mapped.",
+        },
+        {
+          label: "Health",
+          value: hasHealthOutput ? healthStatusText : healthEmptyMessage,
+        },
+        selectedServicePrimarySetupHint
+          ? {
+              label: "Setup hint",
+              value: selectedServicePrimarySetupHint,
+            }
+          : null,
+        {
+          label: "Latest action",
+          value: latestActionText,
+        },
+        {
+          label: "Source",
+          value: selectedServiceRecord.source || "memory",
+        },
+        {
+          label: "Last seen",
+          value: selectedServiceRecord.lastSeen ? formatCreatedAt(selectedServiceRecord.lastSeen) : "Unknown",
+        },
+      ])
+    : [];
+  const diagnosis = selectedService
+    ? extractServiceDiagnosis({
+        selectedService,
+        service: selectedServiceRecord,
+        status: selectedServiceStatus,
+        host: selectedServiceHost,
+        manager: selectedServiceManager,
+        processName: selectedServiceProcessName,
+        localPort: selectedServicePort,
+        localUrl: selectedServiceLocalUrl,
+        localHealthUrl: selectedServiceLocalHealthUrl,
+        localReadinessUrl: selectedServiceLocalReadinessUrl,
+        publicUrl: selectedServicePublicUrl,
+        logs,
+        visibleLogs: hasActiveLogFilter && visibleLogLines.length ? visibleLogText : logs || "",
+        logsFetchedAt,
+        logSignals,
+        healthOutput,
+        healthMeta,
+        latestAction: latestDiagnosisAction,
+        recentAudit: selectedServiceAudit.slice(0, 5),
+        services: serviceItems,
+        latestActionText: latestDiagnosisActionText,
+        runtimeRestarts: selectedServiceRecord?.runtime?.restarts,
+      })
+    : null;
+  const diagnosisHighlights = normalizeObjectCollection(diagnosis?.highlights);
+  const diagnosisLogEvents = normalizeObjectCollection(diagnosis?.logEvents);
+  const diagnosisSuggestedActions = normalizeStringArray(diagnosis?.suggestedActions);
+  const diagnosisSelectTarget =
+    diagnosis?.relatedServiceId && diagnosis.relatedServiceId !== selectedService ? diagnosis.relatedServiceId : "";
+  const diagnosisNextStep =
+    diagnosis?.suggestedNextStep || diagnosisSuggestedActions[0] || "Review raw logs or run a health check for more context.";
+  const diagnosisDetailItems =
+    diagnosis && diagnosis.detected
+      ? [
+          {
+            label: "Severity",
+            value: formatBadgeLabel(diagnosis.severity),
+          },
+          {
+            label: "Primary issue",
+            value: diagnosis.primaryIssue,
+          },
+          {
+            label: "Likely cause",
+            value: diagnosis.likelyCause,
+          },
+          {
+            label: "Most relevant error",
+            value: diagnosis.mostRelevantError,
+          },
+          diagnosis.errorType
+            ? {
+                label: "Error type",
+                value: diagnosis.errorType,
+              }
+            : null,
+          diagnosis.filePath
+            ? {
+                label: "Relevant file",
+                value: diagnosis.filePath,
+              }
+            : null,
+          diagnosis.lineNumber
+            ? {
+                label: "Relevant line",
+                value: String(diagnosis.lineNumber),
+              }
+            : null,
+          {
+            label: "Source",
+            value: formatBadgeLabel(diagnosis.source),
+          },
+          {
+            label: "Affected service",
+            value: diagnosis.affectedService || selectedService,
+          },
+          diagnosis.relatedServiceId
+            ? {
+                label: diagnosis.relatedServiceId === selectedService ? "Related service" : "Likely upstream",
+                value: diagnosis.relatedServiceName || diagnosis.relatedServiceId,
+              }
+            : null,
+          diagnosis.relatedServiceId
+            ? {
+                label: "Host / runtime",
+                value: [diagnosis.relatedServiceHost, diagnosis.relatedServiceManager].filter(Boolean).join(" / "),
+              }
+            : null,
+          diagnosis.relatedEndpoint
+            ? {
+                label: "Endpoint",
+                value: diagnosis.relatedEndpoint,
+              }
+            : null,
+          diagnosis.correlationReason
+            ? {
+                label: "Correlation",
+                value: diagnosis.correlationReason,
+              }
+            : null,
+          !diagnosis?.correlationReason
+            ? {
+                label: "Correlation",
+                value: "No confident match",
+              }
+            : null,
+          diagnosis.correlationConfidence
+            ? {
+                label: "Correlation confidence",
+                value: formatBadgeLabel(diagnosis.correlationConfidence),
+              }
+            : null,
+          diagnosis.timestamp
+            ? {
+                label: "Timestamp",
+                value: formatCreatedAt(diagnosis.timestamp),
+              }
+            : null,
+        ].filter(Boolean)
+      : [];
+  const diagnosisSummaryText = !selectedService
+    ? "Select a service to generate a diagnosis."
+    : diagnosis?.detected
+      ? diagnosis.primaryIssue
+      : "No critical issue detected from the current logs.";
+  const diagnosisSupportText = !selectedService
+    ? "Select a service to convert current logs, health, and action context into an operator-ready diagnosis."
+    : diagnosis?.detected
+      ? diagnosis.likelyCause
+      : "Review raw logs or run a health check for more context.";
+  const extractedEventsEmptyMessage = !selectedService
+    ? "Select a service to review extracted log events."
+    : "No critical issue detected from the current logs. Review raw logs or run a health check for more context.";
+
+  if (selectedServiceNotes[0]) {
+    serviceDetailItems.push({
+      label: "Notes",
+      value: selectedServiceNotes[0],
+    });
+  }
+
+  const auditPendingCount = visibleAudit.filter((entry) => entry.status === "pending").length;
+  const auditFailedCount = visibleAudit.filter((entry) => entry.status === "failed").length;
+  const auditRecentCount = visibleAudit.filter(isAuditEntryFresh).length;
+  const preferExpandedAudit = typeof window !== "undefined" && window.innerHeight >= 980;
+  const auditDisclosureDefaultOpen =
+    auditPendingCount > 0 ||
+    auditFailedCount > 0 ||
+    Boolean(restartResult) ||
+    (preferExpandedAudit && visibleAudit.length > 0);
+  const auditHeaderSummary = [
+    `${visibleAudit.length} entries`,
+    auditPendingCount ? `${auditPendingCount} pending` : null,
+    auditFailedCount ? `${auditFailedCount} failed` : null,
+    auditRecentCount ? `${auditRecentCount} recent` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const incidentsDisclosureDefaultOpen = false;
+  const restartDisclosureDefaultOpen =
+    selectedServiceCanRestart || Boolean(showRestartForm) || Boolean(restartResult);
+  const restartSummaryText = restartStateText;
+  const serviceGroups = groupServicesForRail(serviceItems, selectedService);
+
+  function handleDownloadLogs() {
+    if (!hasLogs) {
+      return;
+    }
+
+    const exportedAt = new Date();
+    const serviceName = selectedService || "unknown-service";
+    const header = [
+      "Garage Admin V2 service logs",
+      `Service: ${serviceName}`,
+      `Exported: ${exportedAt.toISOString()}`,
+      `Lines: ${logLineCount}`,
+      "",
+    ].join("\n");
+
+    downloadFile(
+      `${safeFilePart(serviceName)}-logs-${formatFileTimestamp(exportedAt)}.txt`,
+      `${header}${logs}`,
+    );
+  }
+
+  function handleArchiveLogs() {
+    if (!hasLogs) {
+      return;
+    }
+
+    const archivedAt = new Date().toISOString();
+
+    setLogsArchive((current) => [
+      {
+        id: createId(),
+        serviceName: selectedService || "unknown-service",
+        archivedAt,
+        lineCount: logLineCount,
+        size: logs.length,
+      },
+      ...normalizeObjectCollection(current),
+    ]);
+    setLogs(null);
+    setLogCopyStatus("");
+    setLogsDisposition({ type: "archived", at: archivedAt });
+  }
+
+  function handleClearLogs() {
+    setLogs(null);
+    setLogsError(null);
+    setLogAlertOnly(false);
+    setLogCopyStatus("");
+    setLogsDisposition({ type: "cleared", at: new Date().toISOString() });
+  }
+
+  function handleClearLogFilters() {
+    setLogFilter("");
+    setLogAlertOnly(false);
+  }
+
+  async function handleCopyLogs() {
+    if (!hasLogs) {
+      return;
+    }
+
+    try {
+      await copyText(hasActiveLogFilter ? visibleLogText : logs);
+      setLogCopyStatus(hasActiveLogFilter ? `Copied ${visibleLogLines.length} visible lines.` : "Copied logs.");
+    } catch (error) {
+      setLogCopyStatus(`Copy failed: ${error.message}`);
+    }
+  }
+
+  async function handleCopyLatestResult(event) {
+    event?.stopPropagation();
+
+    if (!latestResultClipboardText) {
+      return;
+    }
+
+    try {
+      await copyText(latestResultClipboardText);
+      setResultCopyStatus("Copied latest result.");
+    } catch (error) {
+      setResultCopyStatus(`Copy failed: ${error.message}`);
+    }
+  }
+
+  async function handleCopyAuditValue(entry, valueType, event) {
+    event?.stopPropagation();
+    const value = valueType === "input" ? entry.input : entry.result;
+
+    try {
+      await copyText(formatAuditValue(value) || "None");
+      setResultCopyStatus(`Copied ${valueType}.`);
+    } catch (error) {
+      setResultCopyStatus(`Copy failed: ${error.message}`);
+    }
+  }
+
+  function handleDownloadHealth() {
+    if (!hasHealthOutput) {
+      return;
+    }
+
+    const exportedAt = new Date();
+    const payload = {
+      exportedAt: exportedAt.toISOString(),
+      selectedService: selectedService || null,
+      actionId: healthMeta?.actionId || null,
+      receivedAt: healthMeta?.receivedAt || null,
+      result: healthOutput,
+    };
+
+    downloadFile(
+      `garage-health-${formatFileTimestamp(exportedAt)}.json`,
+      JSON.stringify(payload, null, 2),
+      "application/json;charset=utf-8",
+    );
+  }
+
+  function handleArchiveHealth() {
+    if (!hasHealthOutput) {
+      return;
+    }
+
+    const archivedAt = new Date().toISOString();
+
+    setHealthArchive((current) => [
+      {
+        id: createId(),
+        archivedAt,
+        actionId: healthMeta?.actionId || null,
+        ok: healthOutput.ok,
+        status: healthOutput.status || null,
+      },
+      ...normalizeObjectCollection(current),
+    ]);
+    setHealthOutput(null);
+    setHealthMeta(null);
+    setHealthDisposition({ type: "archived", at: archivedAt });
+  }
+
+  function handleClearHealth() {
+    setHealthOutput(null);
+    setHealthMeta(null);
+    setHealthDisposition({ type: "cleared", at: new Date().toISOString() });
+  }
+
+  async function handleChatSubmit(event) {
+    event.preventDefault();
+
+    const trimmed = input.trim();
+    if (!trimmed) {
+      return;
+    }
+
+    const userMessage = {
+      id: createId(),
+      role: "user",
+      content: trimmed,
+    };
+
+    setMessages((current) => [...normalizeObjectCollection(current), userMessage]);
+    setInput("");
+    setChatLoading(true);
+    setChatError(null);
+
+    try {
+      const response = await fetch("/api/chat/plan", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          message: trimmed,
+          serviceName: selectedService,
+          incident: selectedIncident,
+          logs: logs || "",
+          recentAudit: selectedService ? selectedServiceAudit.slice(0, 5) : visibleAudit.slice(0, 5),
+          diagnosis: diagnosis
+            ? {
+                primaryIssue: diagnosis.detected ? diagnosis.primaryIssue : null,
+                likelyCause: diagnosis.detected ? diagnosis.likelyCause : null,
+                suggestedActions: diagnosis.suggestedActions || [],
+                suggestedNextStep: diagnosis.suggestedNextStep || diagnosis.suggestedActions?.[0] || null,
+                severity: diagnosis.severity,
+                riskLevel: diagnosis.riskLevel,
+                confidence: diagnosis.confidence,
+              }
+            : null,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.ok) {
+        throw new Error(data.error || "Failed to analyze context");
+      }
+
+      setMessages((current) => [
+        ...normalizeObjectCollection(current),
+        {
+          id: createId(),
+          role: "assistant",
+          summary: data.summary,
+          suggestions: data.suggestions || [],
+          proposedAction: data.proposedAction || null,
+        },
+      ]);
+    } catch (error) {
+      setChatError(error.message);
+      setMessages((current) => [
+        ...normalizeObjectCollection(current),
+        {
+          id: createId(),
+          role: "assistant",
+          content: `Chat analysis failed: ${error.message}`,
+        },
+      ]);
+    } finally {
+      setChatLoading(false);
+    }
+  }
+
+  function applySuggestedAction(proposedAction) {
+    if (!proposedAction || proposedAction.type !== "restart-service") {
+      return;
+    }
+
+    setSelectedService(proposedAction.serviceName);
+    setShowRestartForm(true);
+    setRestartError(null);
+    setRestartResult(null);
+    setRestartForm((current) => ({
+      ...current,
+      reason: proposedAction.reason || "",
+    }));
+  }
+
+  return (
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="sidebar-header">
+          <span className="eyebrow">Garage Admin V2</span>
+          <h1>Operations</h1>
+          <p>Host-aware control plane with approval-bound restarts.</p>
+        </div>
+
+        <section className="rail-section">
+          <div className="section-heading">
+            <h2>Services</h2>
+            <span className="count-pill">{serviceItems.length}</span>
+          </div>
+          <div className="list service-rail-list">
+            {initialLoading ? <div className="empty-state">Loading services...</div> : null}
+            {!initialLoading && !serviceItems.length ? (
+              <div className="empty-state">No services discovered.</div>
+            ) : null}
+            {!initialLoading
+              ? serviceGroups.map((group) => (
+                  <ServiceGroupDisclosure
+                    key={group.key}
+                    title={group.title}
+                    summary={group.summary}
+                    defaultOpen={group.containsSelectedService || group.attentionCount > 0 || group.key === "api"}
+                    forceOpen={group.containsSelectedService}
+                    className={group.attentionCount ? "service-group-disclosure-attention" : ""}
+                  >
+                    <div className="service-group-list">
+                      {group.services.map((service) => (
+                        <button
+                          key={service.name}
+                          type="button"
+                          className={`list-item interactive-item service-card service-severity-${
+                            service.classification?.severity || "unknown"
+                          } ${selectedService === service.name ? "selected" : ""}`}
+                          onClick={() => handleServiceSelect(service.name)}
+                        >
+                          <span className="service-row">
+                            <strong title={service.displayName}>{service.displayName}</strong>
+                            <span className={`status-badge ${statusClassName(service.status)}`} title={service.status}>
+                              {formatStatusLabel(service.status)}
+                            </span>
+                          </span>
+                          <span className="service-chip-row">
+                            <span className="service-type-pill">{service.classification?.type || "Unknown"}</span>
+                            <span
+                              className={`service-severity-pill service-severity-pill-${
+                                service.classification?.severity || "unknown"
+                              }`}
+                            >
+                              {formatStatusLabel(service.classification?.severity || "unknown")}
+                            </span>
+                          </span>
+                          <span className="service-meta" title={getCompactServiceMeta(service)}>
+                            {getCompactServiceMeta(service)}
+                          </span>
+                          {service.classification?.primarySetupHint ? (
+                            <span className="service-hint" title={service.classification.primarySetupHint}>
+                              {service.classification.primarySetupHint}
+                            </span>
+                          ) : null}
+                        </button>
+                      ))}
+                    </div>
+                  </ServiceGroupDisclosure>
+                ))
+              : null}
+          </div>
+        </section>
+
+      </aside>
+
+      <main className="ops-workspace">
+        {initialError ? (
+          <div className="banner error-banner">Initial load failed: {initialError}</div>
+        ) : null}
+
+        <section className="workspace-header">
+          <div className="workspace-title">
+            <span className="eyebrow">Operator console</span>
+            <div className="workspace-title-row">
+              <h1 title={selectedServiceRecord?.displayName || selectedService || "No service selected"}>
+                {selectedServiceRecord?.displayName || selectedService || "No service selected"}
+              </h1>
+              {selectedService ? (
+                <span className={`status-badge ${statusClassName(selectedServiceStatus)}`} title={selectedServiceStatus}>
+                  {formatStatusLabel(selectedServiceStatus)}
+                </span>
+              ) : null}
+            </div>
+            <p title={selectedServiceRecord ? selectedServiceHeaderSummary : undefined}>
+              {selectedServiceHeaderSummary}
+            </p>
+            {selectedServiceRecord ? (
+              <div className="workspace-summary">
+                <span title={outputAlertSummary}>{outputAlertSummary}</span>
+              </div>
+            ) : null}
+          </div>
+          {ENABLE_EXPERIMENTAL_LAYOUT_CUSTOMIZATION ? (
+            <div className="workspace-actions">
+              <span className={`count-pill incident-count-pill ${incidentItems.length ? "incident-count-pill-active" : ""}`}>
+                {incidentItems.length} incident{incidentItems.length === 1 ? "" : "s"}
+              </span>
+              <button type="button" className="layout-reset-button" onClick={handleResetLayout}>
+                Reset layout
+              </button>
+            </div>
+          ) : (
+            <div className="workspace-actions">
+              <span className={`count-pill incident-count-pill ${incidentItems.length ? "incident-count-pill-active" : ""}`}>
+                {incidentItems.length} incident{incidentItems.length === 1 ? "" : "s"}
+              </span>
+            </div>
+          )}
+        </section>
+        <div className="workspace-scroll">
+          <DisclosureSection
+            title="Incidents"
+            summary={`${incidentItems.length} incident${incidentItems.length === 1 ? "" : "s"}`}
+            defaultOpen={incidentsDisclosureDefaultOpen}
+            className="incidents-disclosure incidents-workspace-card"
+            key={`incidents-${incidentItems.length}-${initialLoading ? "loading" : "ready"}`}
+          >
+            <div className="list">
+              {initialLoading ? <div className="empty-state">Loading incidents...</div> : null}
+              {!initialLoading && !incidentItems.length ? (
+                <div className="empty-state">No incidents recorded.</div>
+              ) : null}
+              {incidentItems.map((incident) => (
+                <button
+                  key={incident.id}
+                  type="button"
+                  className={`list-item interactive-item ${
+                    selectedIncidentId === incident.id ? "selected incident-selected" : ""
+                  }`}
+                  onClick={() => handleIncidentSelect(incident)}
+                >
+                  <strong title={incident.title}>{incident.title}</strong>
+                  <span title={`${incident.status}${incident.serviceName ? ` · ${incident.serviceName}` : ""}`}>
+                    {incident.status}
+                    {incident.serviceName ? ` · ${incident.serviceName}` : ""}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </DisclosureSection>
+
+          <SelectedServiceWorkspaceBoundary
+            resetKey={`${selectedService || "none"}-${selectedServiceRecord?.lastSeen || "na"}`}
+            serviceName={selectedServiceRecord?.displayName || selectedService || ""}
+          >
+          <div className="workspace-columns">
+            <div className="workspace-main-column">
+          {selectedServiceRecord ? (
+            <DisclosureSection
+              title="Details"
+              summary="Service metadata, runtime, and notes"
+              className="service-details"
+              key={`details-${selectedService || "none"}`}
+            >
+              <div className="service-details-grid">
+                {serviceDetailItems.map((item) => (
+                  <div key={item.label} className="detail-item">
+                    <span className="detail-label">{item.label}</span>
+                    <span className="detail-value" title={item.value}>
+                      {item.value}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              {selectedServiceRelationshipSections.length ? (
+                <div className="service-relationship-section">
+                  <div>
+                    <span className="detail-label">Relationships</span>
+                    <p className="service-relationship-copy">Declared metadata for provided endpoints, dependencies, and control-plane context.</p>
+                  </div>
+                  <div className="service-relationship-list">
+                    {selectedServiceRelationshipSections.map((section) => (
+                      <div key={section.label} className="service-relationship-row">
+                        <span className="detail-label">{section.label}</span>
+                        <div className="relationship-chip-row">
+                          {section.items.map((item) =>
+                            item.serviceId ? (
+                              <button
+                                key={item.key}
+                                type="button"
+                                className="relationship-chip relationship-chip-button"
+                                title={item.title}
+                                onClick={() => setSelectedService(item.serviceId)}
+                                disabled={item.serviceId === selectedService}
+                              >
+                                <span className="relationship-chip-value">{item.value}</span>
+                                {item.meta ? <span className="relationship-chip-meta">{item.meta}</span> : null}
+                              </button>
+                            ) : (
+                              <span key={item.key} className="relationship-chip" title={item.title}>
+                                <span className="relationship-chip-value">{item.value}</span>
+                                {item.meta ? <span className="relationship-chip-meta">{item.meta}</span> : null}
+                              </span>
+                            ),
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </DisclosureSection>
+          ) : null}
+
+          {selectedServiceRecord ? (
+            <DisclosureSection
+              title="Current Signals"
+              summary={outputAlertSummary}
+              defaultOpen={signalDisclosureDefaultOpen}
+              className="signal-details"
+              key={`signals-${selectedService || "none"}-${signalAlertCount}-${signalDisclosureDefaultOpen ? "open" : "closed"}-${
+                latestVisibleAction?.id || "none"
+              }`}
+            >
+              <div className="service-details-grid signal-details-grid">
+                {signalDetailItems.map((item) => (
+                  <div key={item.label} className="detail-item">
+                    <span className="detail-label">{item.label}</span>
+                    <span className="detail-value" title={item.value}>
+                      {item.value}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </DisclosureSection>
+          ) : null}
+
+          <DisclosureSection
+            title="Diagnosis"
+            summary={diagnosisSummaryText}
+            defaultOpen={true}
+            className="diagnosis-section"
+            key={`diagnosis-${selectedService || "none"}-${diagnosis?.detected ? diagnosis.primaryIssue : "clear"}-${
+              diagnosis?.timestamp || "none"
+            }`}
+          >
+            <div className="diagnosis-panel">
+              <div className="diagnosis-heading-row">
+                <div className="diagnosis-heading-copy">
+                  <span className="section-title">Diagnosis</span>
+                  <p>{diagnosisSupportText}</p>
+                </div>
+                {selectedService ? (
+                  <div className="diagnosis-badges">
+                    <span className={`status-badge status-severity-${diagnosis?.severity || "info"}`}>
+                      Severity: {formatBadgeLabel(diagnosis?.severity || "info")}
+                    </span>
+                    <span className={`status-badge status-confidence-${diagnosis?.confidence || "low"}`}>
+                      Confidence: {formatBadgeLabel(diagnosis?.confidence || "low")}
+                    </span>
+                    <span className="status-badge status-risk-unknown">Source: {formatBadgeLabel(diagnosis?.source || "none")}</span>
+                  </div>
+                ) : null}
+              </div>
+
+              {!selectedService ? (
+                <div className="empty-state output-empty">Select a service to generate a diagnosis.</div>
+              ) : (
+                <div className="diagnosis-content">
+                  <div className="diagnosis-signal-strip">
+                    <span className="detail-label">Extracted signals</span>
+                    <div className="diagnosis-signal-grid">
+                      {diagnosisHighlights.map((item) => (
+                        <div key={`${item.label}-${item.value}`} className="detail-item diagnosis-signal-item">
+                          <span className="detail-label">{item.label}</span>
+                          <span className="detail-value diagnosis-detail-value" title={item.value}>
+                            {item.value}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {diagnosis?.detected ? (
+                    <>
+                      <div className="diagnosis-next-step-block">
+                        <span className="detail-label">Suggested next safe step</span>
+                        <strong>{diagnosisNextStep}</strong>
+                      </div>
+
+                      <div className="diagnosis-grid">
+                        {diagnosisDetailItems.map((item) => (
+                          <div key={item.label} className="detail-item">
+                            <span className="detail-label">{item.label}</span>
+                            <span className="detail-value diagnosis-detail-value" title={item.value}>
+                              {item.value}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+
+                      {diagnosisSelectTarget ? (
+                        <div className="diagnosis-related-actions">
+                          <button
+                            type="button"
+                            className="mini-button relationship-select-button"
+                            onClick={() => setSelectedService(diagnosisSelectTarget)}
+                          >
+                            Select related service
+                          </button>
+                        </div>
+                      ) : null}
+
+                      {diagnosis.suggestedCommand ? (
+                        <div className="diagnosis-command-block">
+                          <span className="detail-label">Suggested safe command</span>
+                          <pre className="diagnosis-command" tabIndex={0}>
+                            {diagnosis.suggestedCommand}
+                          </pre>
+                        </div>
+                      ) : null}
+
+                      <div className="diagnosis-actions-block">
+                        <span className="detail-label">Suggested actions</span>
+                        <ul className="suggestion-list diagnosis-suggestion-list">
+                          {(Array.isArray(diagnosis?.suggestedActions) ? diagnosis.suggestedActions : []).map((action) => (
+                            <li key={action}>{action}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="diagnosis-clear-state">
+                      <div className="diagnosis-clear-copy">
+                        <strong>{diagnosisSummaryText}</strong>
+                        <span>
+                          Service status: {formatStatusLabel(selectedServiceStatus)} · {outputAlertSummary}
+                        </span>
+                      </div>
+                      <div className="diagnosis-actions-block">
+                        <span className="detail-label">Suggested safe actions</span>
+                        <ul className="suggestion-list diagnosis-suggestion-list">
+                          {diagnosisSuggestedActions.map((action) => (
+                            <li key={action}>{action}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </DisclosureSection>
+
+          <section className="panel logs-panel">
+            <div className="panel-heading">
+              <div>
+                <span className="section-title">Logs</span>
+                <h2>Service Logs</h2>
+                <p>
+                  {selectedService
+                    ? `${logLineCount} lines · ${formatBytes(logs || "")}${
+                        hasActiveLogFilter ? ` · ${visibleLogLines.length} shown` : ""
+                      }`
+                    : "No service selected"}
+                </p>
+              </div>
+              <div className="panel-actions">
+                <input
+                  className="log-filter-input"
+                  value={logFilter}
+                  onChange={(event) => setLogFilter(event.target.value)}
+                  placeholder="Filter logs"
+                  disabled={!hasLogs}
+                />
+                <button
+                  type="button"
+                  className={`toggle-button ${logAlertOnly ? "toggle-active" : ""}`}
+                  onClick={() => setLogAlertOnly((current) => !current)}
+                  disabled={!hasLogs || !logSignals.alertCount}
+                >
+                  Alerts
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={handleClearLogFilters}
+                  disabled={!hasActiveLogFilter}
+                >
+                  Clear Filter
+                </button>
+                <button type="button" className="secondary-button" onClick={handleCopyLogs} disabled={!hasLogs}>
+                  {hasActiveLogFilter ? "Copy Visible" : "Copy Logs"}
+                </button>
+                <button type="button" className="secondary-button" onClick={handleDownloadLogs} disabled={!hasLogs}>
+                  Download .txt
+                </button>
+                <button type="button" className="secondary-button" onClick={handleArchiveLogs} disabled={!hasLogs}>
+                  Archive
+                </button>
+                <button type="button" className="secondary-button" onClick={handleClearLogs} disabled={!hasLogs && !logsError}>
+                  Clear
+                </button>
+              </div>
+            </div>
+
+            {logsLoading ? <div className="empty-state output-empty">Loading logs...</div> : null}
+            {logsError ? <div className="error-text">Logs unavailable: {logsError}</div> : null}
+            {logCopyStatus ? <div className="inline-note">{logCopyStatus}</div> : null}
+            {!logsLoading && !logsError ? (
+              <>
+                <div className="log-highlight-section">
+                  <div className="log-highlight-section-heading">
+                    <div>
+                      <span className="detail-label">Extracted events</span>
+                      <p>Important log signatures are surfaced here before the raw stream.</p>
+                    </div>
+                    {diagnosisLogEvents.length ? (
+                      <span className="count-pill">{diagnosisLogEvents.length}</span>
+                    ) : null}
+                  </div>
+                  <LogEventHighlights
+                    events={diagnosisLogEvents}
+                    emptyMessage={extractedEventsEmptyMessage}
+                    onSelectService={setSelectedService}
+                    selectedServiceId={selectedService}
+                  />
+                </div>
+                <LogViewer lines={hasLogs ? visibleLogLines : null} emptyMessage={filteredLogEmptyMessage} />
+              </>
+            ) : null}
+            {logsArchiveItems.length ? (
+              <div className="archive-note">
+                {logsArchiveItems.length} log archive{logsArchiveItems.length === 1 ? "" : "s"} this session. Latest:{" "}
+                {logsArchiveItems[0].serviceName} · {logsArchiveItems[0].lineCount} lines ·{" "}
+                {formatCreatedAt(logsArchiveItems[0].archivedAt)}
+              </div>
+            ) : null}
+          </section>
+
+            </div>
+
+            <div className="workspace-side-column">
+              <section
+                className="ops-grid"
+                ref={opsGridRef}
+                style={{
+                  "--right-top-track": `${rightPanelSplit}fr`,
+                  "--right-bottom-track": `${1 - rightPanelSplit}fr`,
+                }}
+              >
+          <section className="panel actions-panel" style={{ gridArea: rightPanelGridAreas.actions }}>
+            <div className="panel-heading">
+              <div>
+                <span className="section-title">Actions</span>
+                <h2>Service Actions</h2>
+                <p>
+                  {selectedServiceRecord
+                    ? selectedServiceRecord.displayName
+                    : "Select a service to create actions."}
+                </p>
+              </div>
+              {ENABLE_EXPERIMENTAL_LAYOUT_CUSTOMIZATION ? (
+                <LayoutCardControls
+                  cardId="actions"
+                  label="Actions"
+                  order={rightPanelOrder}
+                  onMove={moveRightPanelCard}
+                />
+              ) : null}
+            </div>
+
+            <div className="panel-scroll actions-panel-scroll">
+            {selectedService ? (
+              <div className="action-block">
+                <div className="action-form two-column compact-fields">
+                  <label>
+                    <span className="detail-label">Requested by</span>
+                    <input
+                      name="requestedBy"
+                      value={restartForm.requestedBy}
+                      onChange={handleRestartFormChange}
+                      placeholder="operator name"
+                      required
+                    />
+                  </label>
+                  <label>
+                    <span className="detail-label">Approved by</span>
+                    <input
+                      name="approvedBy"
+                      value={restartForm.approvedBy}
+                      onChange={handleRestartFormChange}
+                      placeholder="approval operator"
+                    />
+                  </label>
+                </div>
+
+                <div className="run-action-grid">
+                  <button
+                    type="button"
+                    className="run-action-button"
+                    onClick={() => runReadOnlyAction("fetch-logs")}
+                    disabled={restartSubmitting || !selectedServiceCanFetchLogs}
+                    title={capabilityMessage(selectedServiceLogsCapability, getActionRiskProfile("fetch-logs").detail)}
+                  >
+                    <strong>Fetch Logs</strong>
+                    <span>{actionSupportSummary("fetch-logs", selectedServiceLogsCapability)}</span>
+                    <span
+                      className={`status-badge status-risk-${getActionRiskProfile("fetch-logs").riskLevel} action-risk-badge`}
+                      title={getActionRiskProfile("fetch-logs").detail}
+                    >
+                      {getActionRiskProfile("fetch-logs").label}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="run-action-button"
+                    onClick={() => runReadOnlyAction("health-check")}
+                    disabled={restartSubmitting || !selectedServiceCanRunHealthCheck}
+                    title={capabilityMessage(selectedServiceHealthCapability, getActionRiskProfile("health-check").detail)}
+                  >
+                    <strong>Run Health Check</strong>
+                    <span>{actionSupportSummary("health-check", selectedServiceHealthCapability)}</span>
+                    <span
+                      className={`status-badge status-risk-${getActionRiskProfile("health-check").riskLevel} action-risk-badge`}
+                      title={getActionRiskProfile("health-check").detail}
+                    >
+                      {getActionRiskProfile("health-check").label}
+                    </span>
+                  </button>
+                </div>
+
+                {!selectedServiceCanFetchLogs || !selectedServiceCanRunHealthCheck ? (
+                  <div className="action-support-notes">
+                    {!selectedServiceCanFetchLogs ? (
+                      <div className="inline-note">
+                        Fetch Logs: {capabilityMessage(selectedServiceLogsCapability, "Unavailable for this service.")}
+                      </div>
+                    ) : null}
+                    {!selectedServiceCanRunHealthCheck ? (
+                      <div className="inline-note">
+                        Run Health Check: {capabilityMessage(selectedServiceHealthCapability, "Unavailable for this service.")}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                <div className="health-inline">
+                  <div className="inline-status-block">
+                    <span className="detail-label">Health</span>
+                    <div className="inline-status-row">
+                      <span className={`status-badge ${hasHealthOutput && healthOutput.ok ? "status-completed" : hasHealthOutput ? "status-failed" : "status-unknown"}`}>
+                        {hasHealthOutput ? (healthOutput.ok ? "ok" : "attention") : "none"}
+                      </span>
+                      <span>
+                        {healthMeta?.receivedAt
+                          ? `${healthStatusText} · ${formatCreatedAt(healthMeta.receivedAt)}`
+                          : "Run a health check to load current output."}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="mini-actions">
+                    <button type="button" className="mini-button" onClick={handleDownloadHealth} disabled={!hasHealthOutput}>
+                      JSON
+                    </button>
+                    <button type="button" className="mini-button" onClick={handleArchiveHealth} disabled={!hasHealthOutput}>
+                      Archive
+                    </button>
+                    <button type="button" className="mini-button" onClick={handleClearHealth} disabled={!hasHealthOutput}>
+                      Clear
+                    </button>
+                  </div>
+                </div>
+
+                <div className={`approval-details-card ${selectedServiceCanRestart ? "" : "approval-details-card-unsupported"}`}>
+                  <div className="approval-details-header">
+                    <div>
+                      <span className="section-title">Approval</span>
+                      <h3>Restart Approval Details</h3>
+                    </div>
+                    <span
+                      className={`status-badge status-risk-${getActionRiskProfile("restart-service").riskLevel}`}
+                      title={getActionRiskProfile("restart-service").detail}
+                    >
+                      {getActionRiskProfile("restart-service").label}
+                    </span>
+                  </div>
+                  <div className="approval-details-grid">
+                    {restartApprovalDetails.map((item) => (
+                      <div key={item.label} className="detail-item">
+                        <span className="detail-label">{item.label}</span>
+                        <span className="detail-value approval-detail-value" title={item.value}>
+                          {item.value}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <DisclosureSection
+                  title="Restart"
+                  summary={restartSummaryText}
+                  defaultOpen={restartDisclosureDefaultOpen}
+                  className={`restart-disclosure ${selectedServiceCanRestart ? "" : "restart-disclosure-quiet"}`}
+                  key={`restart-${selectedService || "none"}-${selectedServiceCanRestart ? "supported" : "unsupported"}-${
+                    showRestartForm ? "form" : "summary"
+                  }-${restartResult?.action?.id || "none"}`}
+                >
+                  {showRestartForm && selectedServiceCanRestart ? (
+                    <form className="action-form" onSubmit={handleRestartSubmit}>
+                      <label>
+                        <span className="detail-label">Reason</span>
+                        <input
+                          name="reason"
+                          value={restartForm.reason}
+                          onChange={handleRestartFormChange}
+                          placeholder="optional reason"
+                        />
+                      </label>
+                      <div className="action-row">
+                        <button type="submit" className="action-button" disabled={restartSubmitting}>
+                          {restartSubmitting ? "Creating..." : "Create Restart Action"}
+                        </button>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={handleRestartCancel}
+                          disabled={restartSubmitting}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </form>
+                  ) : (
+                    <div className={`restart-state-row ${selectedServiceCanRestart ? "" : "quiet-state"}`}>
+                      <div className="inline-status-block">
+                        <span className="detail-label">Restart</span>
+                        <div className="inline-badges">
+                          <span
+                            className={`status-badge status-risk-${getActionRiskProfile("restart-service").riskLevel} action-risk-badge`}
+                            title={getActionRiskProfile("restart-service").detail}
+                          >
+                            {getActionRiskProfile("restart-service").label}
+                          </span>
+                        </div>
+                        <div className="inline-status-row">
+                          <span className={`status-badge ${statusClassName(restartState)}`} title={restartState}>
+                            {formatStatusLabel(restartState)}
+                          </span>
+                          <span>{restartStateText}</span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className={`secondary-button restart-button ${
+                          selectedServiceCanRestart ? "" : "guarded-restart"
+                        }`}
+                        onClick={() => {
+                          setShowRestartForm(true);
+                          setRestartError(null);
+                          setRestartResult(null);
+                        }}
+                        disabled={restartSubmitting || !selectedServiceCanRestart}
+                      >
+                        {selectedServiceCanRestart ? "Prepare Restart" : "Restart unavailable"}
+                      </button>
+                    </div>
+                  )}
+                </DisclosureSection>
+
+                {restartError ? <div className="error-text">Action failed: {restartError}</div> : null}
+                {resultCopyStatus ? <div className="inline-note">{resultCopyStatus}</div> : null}
+                {restartResult ? (
+                  <div className="latest-action-strip">
+                    <div className="compact-result-header">
+                      <span className={`status-badge ${statusClassName(latestActionStatus)}`} title={latestActionStatus}>
+                        {formatStatusLabel(latestActionStatus)}
+                      </span>
+                      <strong>{actionLabel(restartResult.action?.actionType || restartResult.result?.actionType)}</strong>
+                      <button
+                        type="button"
+                        className="mini-button compact-copy-button"
+                        onClick={handleCopyLatestResult}
+                        disabled={!latestResultClipboardText}
+                      >
+                        Copy Result
+                      </button>
+                    </div>
+                    <div>{getActionResultSummary(restartResult)}</div>
+                    <VerificationSummary result={getActionResult(restartResult)} />
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              <div className="empty-state output-empty">Select a service to prepare actions.</div>
+            )}
+            </div>
+          </section>
+
+          <div
+            className={`right-stack-resizer ${rightPanelResizing ? "resizing" : ""}`}
+            role="separator"
+            aria-label={`Resize ${topRightPanelLabel} and ${bottomRightPanelLabel} panels`}
+            aria-orientation="horizontal"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(rightPanelSplit * 100)}
+            aria-valuetext={`${Math.round(rightPanelSplit * 100)}% ${topRightPanelLabel}, ${Math.round(
+              (1 - rightPanelSplit) * 100,
+            )}% ${bottomRightPanelLabel}`}
+            tabIndex={0}
+            onPointerDown={handleRightResizerPointerDown}
+            onPointerMove={handleRightResizerPointerMove}
+            onPointerUp={handleRightResizerPointerEnd}
+            onPointerCancel={handleRightResizerPointerEnd}
+            onLostPointerCapture={handleRightResizerPointerEnd}
+            onKeyDown={handleRightResizerKeyDown}
+          />
+
+          <section
+            className={`panel audit-panel ${visibleAudit.length ? "" : "audit-panel-empty"}`}
+            style={{ gridArea: rightPanelGridAreas.audit }}
+          >
+            <div className="panel-heading">
+              <div>
+                <span className="section-title">History</span>
+              </div>
+              <div className="audit-toolbar">
+                {ENABLE_EXPERIMENTAL_LAYOUT_CUSTOMIZATION ? (
+                  <LayoutCardControls
+                    cardId="audit"
+                    label="Recent Audit"
+                    order={rightPanelOrder}
+                    onMove={moveRightPanelCard}
+                  />
+                ) : null}
+                <div className="filter-toggle">
+                  <button
+                    type="button"
+                    className={`toggle-button ${auditFilterMode === "all" ? "toggle-active" : ""}`}
+                    onClick={() => setAuditFilterMode("all")}
+                  >
+                    All
+                  </button>
+                  <button
+                    type="button"
+                    className={`toggle-button ${auditFilterMode === "service" ? "toggle-active" : ""}`}
+                    onClick={() => setAuditFilterMode("service")}
+                    disabled={!selectedService}
+                  >
+                    Service
+                  </button>
+                </div>
+                <button type="button" className="secondary-button" onClick={() => refreshAudit().catch(() => {})}>
+                  {auditLoading ? "Refreshing..." : "Refresh"}
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={handleCopyLatestResult}
+                  disabled={!latestResultClipboardText}
+                >
+                  Copy Latest
+                </button>
+              </div>
+            </div>
+
+            {auditError ? <div className="error-text">Audit refresh failed: {auditError}</div> : null}
+            <div className="panel-scroll audit-panel-scroll">
+            <DisclosureSection
+              title="Audit"
+              summary={auditHeaderSummary || "0 entries"}
+              defaultOpen={auditDisclosureDefaultOpen}
+              className="audit-disclosure"
+              key={`audit-${selectedService || "all"}-${auditFilterMode}-${visibleAudit.length}-${auditPendingCount}-${auditFailedCount}-${
+                visibleAudit[0]?.id || "none"
+              }`}
+            >
+              {!visibleAudit.length ? (
+                <div className="empty-state output-empty subtle-empty">
+                  {selectedService && auditFilterMode === "service"
+                    ? "No audit entries for the selected service."
+                    : "No audit entries yet."}
+                </div>
+              ) : null}
+              <div className="audit-list">
+                {visibleAudit.map((entry) => {
+                  const isExpanded = expandedAuditItemIds.includes(String(entry.id || "").trim());
+                  const reason =
+                    entry.input && typeof entry.input === "object" && "reason" in entry.input
+                      ? entry.input.reason
+                      : "";
+                  const unsupportedRestart = getUnsupportedRestartMessage(entry.result);
+                  const verification = getVerification(entry.result);
+                  const formattedInput = formatAuditValue(entry.input) || "None";
+                  const formattedResult = formatAuditValue(entry.result) || "None";
+                  const auditSummary = getCompactAuditSummary(entry);
+                  const actionBusy = actionBusyId === entry.id;
+
+                  return (
+                    <div
+                      key={entry.id}
+                      role="button"
+                      tabIndex={0}
+                      className="audit-item interactive-item"
+                      onClick={() => toggleAuditItem(entry.id)}
+                      onKeyDown={(event) => handleAuditItemKeyDown(entry, event)}
+                    >
+                      <div className="audit-header">
+                        <div className="audit-title-group">
+                          <strong>{actionLabel(entry.actionType)}</strong>
+                          <span title={entry.target}>{entry.target}</span>
+                        </div>
+                        <span className={`status-badge status-${entry.status}`} title={entry.status}>
+                          {formatStatusLabel(entry.status)}
+                        </span>
+                      </div>
+                      <div className="audit-meta">
+                        <span title={`Requested: ${entry.requestedBy || "Unknown"}`}>
+                          Requested: {entry.requestedBy || "Unknown"}
+                        </span>
+                        <span title={`Approved: ${entry.approvedBy || "None"}`}>
+                          Approved: {entry.approvedBy || "None"}
+                        </span>
+                        <span title={formatCreatedAt(entry.createdAt)}>{formatCreatedAt(entry.createdAt)}</span>
+                      </div>
+
+                      {unsupportedRestart ? <div className="known-failure">{unsupportedRestart}</div> : null}
+                      {auditSummary ? (
+                        <div className="audit-summary" title={auditSummary}>
+                          {auditSummary}
+                        </div>
+                      ) : null}
+                      {verification ? <VerificationSummary result={entry.result} /> : null}
+
+                      {canApproveAction(entry) || canExecuteAction(entry) ? (
+                        <div className="audit-actions">
+                          {canApproveAction(entry) ? (
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              onClick={(event) => approveAction(entry, event)}
+                              disabled={actionBusy || !restartForm.approvedBy.trim()}
+                            >
+                              {actionBusy ? "Approving..." : "Approve"}
+                            </button>
+                          ) : null}
+                          {canExecuteAction(entry) ? (
+                            <button
+                              type="button"
+                              className="action-button"
+                              onClick={(event) => executeAction(entry, event)}
+                              disabled={actionBusy}
+                            >
+                              {actionBusy ? "Executing..." : "Execute"}
+                            </button>
+                          ) : null}
+                        </div>
+                      ) : null}
+
+                      {isExpanded ? (
+                        <div className="audit-details" onClick={(event) => event.stopPropagation()}>
+                          {reason ? (
+                            <div>
+                              <span className="detail-label">Reason</span>
+                              <div>{reason}</div>
+                            </div>
+                          ) : null}
+                          <div>
+                            <div className="detail-header">
+                              <span className="detail-label">Input</span>
+                              <button
+                                type="button"
+                                className="mini-button"
+                                onClick={(event) => handleCopyAuditValue(entry, "input", event)}
+                              >
+                                Copy
+                              </button>
+                            </div>
+                            <pre className="audit-block audit-input-block" tabIndex={0}>{formattedInput}</pre>
+                          </div>
+                          <div>
+                            <div className="detail-header">
+                              <span className="detail-label">Result</span>
+                              <button
+                                type="button"
+                                className="mini-button"
+                                onClick={(event) => handleCopyAuditValue(entry, "result", event)}
+                              >
+                                Copy
+                              </button>
+                            </div>
+                            <pre className="audit-block audit-result-block" tabIndex={0}>{formattedResult}</pre>
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            </DisclosureSection>
+            </div>
+          </section>
+              </section>
+            </div>
+          </div>
+          </SelectedServiceWorkspaceBoundary>
+        </div>
+      </main>
+
+      <aside className="chat-panel">
+        <div className="chat-header">
+          <div>
+            <span className="section-title">Assistant</span>
+            <h2>Context Chat</h2>
+          </div>
+          {chatLoading ? <span className="count-pill">Analyzing</span> : null}
+        </div>
+        {chatError ? <div className="banner error-banner">Chat analysis failed: {chatError}</div> : null}
+        <div className="messages">
+          {chatMessages.map((m) => (
+            <div key={m.id} className={`message ${m.role}`}>
+              {m.content ? <div>{m.content}</div> : null}
+              {m.summary ? (
+                <div className="chat-plan">
+                  <div className="chat-summary">
+                    <span className="detail-label">Summary</span>
+                    <div>{m.summary}</div>
+                  </div>
+                  <div>
+                    <span className="detail-label">Suggestions</span>
+                    <ul className="suggestion-list">
+                      {(Array.isArray(m.suggestions) ? m.suggestions : []).map((suggestion) => (
+                        <li key={suggestion}>{suggestion}</li>
+                      ))}
+                    </ul>
+                  </div>
+                  {m.proposedAction ? (
+                    <div className="suggested-action-card">
+                      <span className="detail-label">
+                        Suggested Action: Restart {m.proposedAction.serviceName || "selected service"}
+                      </span>
+                      <div>{m.proposedAction.reason || "No reason provided."}</div>
+                      <button
+                        type="button"
+                        className="action-button"
+                        onClick={() => applySuggestedAction(m.proposedAction)}
+                      >
+                        Use in Actions Panel
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          ))}
+          {chatLoading ? <div className="message system">Analyzing current context...</div> : null}
+        </div>
+
+        <form className="composer" onSubmit={handleChatSubmit}>
+          <input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Ask for context analysis or next-step suggestions..."
+          />
+          <button disabled={chatLoading}>{chatLoading ? "Analyzing..." : "Send"}</button>
+        </form>
+      </aside>
+    </div>
+  );
+}

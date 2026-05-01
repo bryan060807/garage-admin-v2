@@ -1,0 +1,189 @@
+Garage Admin V2 live verification log
+Date: 2026-04-30
+Host: Windows app/runtime host
+Repo path: C:\Users\bryan\aibry\projects\garage-admin-v2
+Scope: Verify live PM2-hosted runtime for Service Relationships + Dependency-Aware Diagnosis Display
+
+Summary
+- Live PM2 runtime is serving the new relationship UI.
+- /api/services live response shape is correct: top-level ok, top-level items, and relationship metadata.
+- Relationship pane was verified live for garage-admin-v2, trackmaster-ui, and trackmaster-api.
+- Diagnosis card live verification confirmed "No confident match".
+- Live verification did not surface runtime examples of:
+  - Matched declared dependency
+  - Matched provided health endpoint
+  - Matched public host
+- No production restart was performed.
+- PM2 restart is not recommended based on this verification.
+
+Executed checks
+
+1. Repository status
+Command:
+  git status --short
+Result:
+  Failed because this workspace on the Windows host is not a git repository.
+  Message:
+  fatal: not a git repository (or any of the parent directories): .git
+
+2. PM2 status
+Command:
+  pm2 status garage-admin-v2
+Result:
+  garage-admin-v2 was online in PM2.
+  PID: 4072
+  Uptime: about 2 minutes at time of check
+  Restart count: 11
+  Memory: about 59.4 MB
+
+3. Health probe
+Command:
+  Invoke-RestMethod http://127.0.0.1:4010/health | ConvertTo-Json -Depth 8
+Result:
+  {
+    "ok": true,
+    "service": "garage-admin-v2-backend",
+    "databaseConfigured": true,
+    "frontendDistReady": true
+  }
+
+4. Services API probe
+Command:
+  Invoke-RestMethod http://127.0.0.1:4010/api/services | ConvertTo-Json -Depth 12
+Result:
+  Top-level ok present: true
+  Top-level items present: true
+  Top-level sources present: true
+
+  Live metadata examples confirmed:
+  - garage-admin-v2
+    - provides endpoint: http://127.0.0.1:4010
+    - health endpoint: http://127.0.0.1:4010/health
+    - depends on: admin-proxy
+    - dependency endpoint: http://127.0.0.1:4000/admin/health
+
+  - trackmaster-ui
+    - provides endpoint: http://127.0.0.1:3000
+    - public host: trackmaster.aibry.shop
+    - depends on: trackmaster-api
+
+  - trackmaster-api
+    - provides endpoint: http://127.0.0.1:3004
+    - health endpoint: http://127.0.0.1:3004/api/health
+    - readiness endpoint: http://127.0.0.1:3004/api/readiness
+    - public host: trackmaster-api.aibry.shop
+
+  - admin-proxy
+    - provides endpoint: http://127.0.0.1:4000
+    - health endpoint: http://127.0.0.1:4000/admin/health
+    - admin paths:
+      /admin/health
+      /admin/services
+      /admin/service-discovery
+      /admin/status
+
+5. Root app response
+Command:
+  Invoke-WebRequest http://127.0.0.1:4010/ | Select-Object StatusCode, Content | ConvertTo-Json -Depth 4
+Result:
+  HTTP status: 200
+  Served title: Garage Admin V2
+  Served JS bundle: /assets/index-61IgWnAn.js
+  Served CSS bundle: /assets/index-CR-jS79x.css
+  Conclusion:
+  The PM2-served app was serving the current built frontend bundle, not an obviously stale asset.
+
+6. Browser executable discovery
+Commands:
+  where.exe msedge
+  where.exe chrome
+  Get-ChildItem 'C:\Program Files\Microsoft\Edge\Application\msedge.exe','C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe','C:\Program Files\Google\Chrome\Application\chrome.exe','C:\Program Files (x86)\Google\Chrome\Application\chrome.exe' -ErrorAction SilentlyContinue | Select-Object FullName | Format-Table -AutoSize
+Result:
+  Found:
+  - C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe
+  - C:\Program Files\Google\Chrome\Application\chrome.exe
+
+7. Direct live logs endpoint checks
+Commands:
+  Invoke-RestMethod http://127.0.0.1:4010/api/services/garage-admin-v2/logs | ConvertTo-Json -Depth 6
+  Invoke-RestMethod http://127.0.0.1:4010/api/services/trackmaster-ui/logs | ConvertTo-Json -Depth 6
+  Invoke-RestMethod http://127.0.0.1:4010/api/services/trackmaster-api/logs | ConvertTo-Json -Depth 6
+Result:
+  - garage-admin-v2 logs endpoint returned PM2 output successfully.
+  - trackmaster-ui logs endpoint returned PM2 output successfully.
+  - trackmaster-api logs endpoint returned PM2 output successfully.
+  - trackmaster-api live logs included:
+    - relation "sessions" does not exist
+    - file path references under trackmaster-api
+    - BadRequestError: request aborted
+
+8. Headless browser verification against live UI
+Method:
+  Used headless Microsoft Edge with remote debugging against http://127.0.0.1:4010/
+  Verified rendered relationship rows for selected services in the live UI.
+
+  Selected services checked:
+  - Garage Admin V2
+  - TrackMaster UI
+  - TrackMaster API
+
+  Live rendered relationship notes:
+  - Garage Admin V2
+    - Provides: http://127.0.0.1:4010
+    - Depends on: admin-proxy / AIBRY Admin Proxy
+    - Health endpoint: http://127.0.0.1:4010/health
+
+  - TrackMaster UI
+    - Provides: http://127.0.0.1:3000
+    - Depends on: trackmaster-api / TrackMaster API
+    - Health endpoint: http://127.0.0.1:3000/
+    - Public host: trackmaster.aibry.shop
+
+  - TrackMaster API
+    - Provides: http://127.0.0.1:3004
+    - Health endpoint: http://127.0.0.1:3004/api/health
+    - Readiness endpoint: http://127.0.0.1:3004/api/readiness
+    - Public host metadata rendered in the relationship area
+
+9. Live diagnosis verification
+Method:
+  In the live UI, selected TrackMaster API and triggered the read-only Fetch Logs action.
+
+Result observed in Diagnosis card:
+  Summary: Recent action failed
+  Correlation: No confident match
+  Source: Action
+  Most relevant error:
+    Command failed: cmd.exe /d /s /c pm2 logs trackmaster-api --lines 200 --nostream
+
+  Extracted event cards:
+  - None were rendered in that browser pass.
+
+Important live mismatch
+- Direct GET /api/services/trackmaster-api/logs returned live PM2 logs successfully.
+- The UI-side read-only Fetch Logs path for trackmaster-api produced an action failure instead of a log-derived diagnosis.
+- This indicates a runtime behavior mismatch in the read-only action path, not a stale frontend bundle issue.
+
+Correlation wording verification status
+- Confirmed live:
+  - No confident match
+
+- Not observed live in this session:
+  - Matched declared dependency
+  - Matched provided health endpoint
+  - Matched public host
+
+Reason:
+- Current live runtime data and logs did not naturally produce those correlation cases during this verification pass.
+
+Restart recommendation
+- Restart recommended: No
+- Reason:
+  The live runtime is already serving the relationship UI and current built frontend assets.
+
+If a restart is later requested anyway, the exact command previously recommended was:
+  pm2 restart garage-admin-v2 --update-env
+
+File changes during this verification
+- None to application code.
+- This log file was created after verification at the user's request.
