@@ -1851,6 +1851,10 @@ button {
   margin-bottom: 0;
 }
 
+.audit-review-origin-note {
+  margin-left: auto;
+}
+
 .workspace-fallback-panel {
   display: flex;
   flex-direction: column;

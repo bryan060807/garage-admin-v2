@@ -5831,13 +5831,17 @@ export default function App() {
                   );
                   const auditPersistedApprovalContext = buildActionApprovalContextFromReviewSnapshot(auditReviewSnapshot);
                   const auditDisplayApprovalContext = auditPersistedApprovalContext || auditApprovalContext;
-                  const auditReviewDetails = shouldUsePersistedActionReview(auditReviewSnapshot)
+                  const auditUsesPersistedActionReview = shouldUsePersistedActionReview(auditReviewSnapshot);
+                  const auditReviewDetails = auditUsesPersistedActionReview
                     ? buildPersistedActionReviewDetails(auditReviewSnapshot)
                     : shouldShowActionApprovalPreview(entry.actionType, entry, auditRiskContext)
                       ? buildActionApprovalDetails(entry.actionType, entry, auditServiceRecord, {
                           riskProfile: auditRiskProfile,
                         })
                       : [];
+                  const auditReviewSourceLabel = auditUsesPersistedActionReview
+                    ? `Persisted ${formatStatusLabel(auditReviewSnapshot?.phase)} snapshot`
+                    : "Computed fallback context";
                   const auditFreshnessAcknowledged = Boolean(
                     approvalFreshnessAcknowledgements[String(entry.id || "").trim()],
                   );
@@ -5964,6 +5968,7 @@ export default function App() {
                             <div className="audit-approval-preview">
                               <div className="detail-header">
                                 <span className="detail-label">Action review</span>
+                                <span className="inline-note audit-review-origin-note">{auditReviewSourceLabel}</span>
                               </div>
                               <div className="approval-details-grid audit-approval-grid">
                                 {auditReviewDetails.map((item) => (

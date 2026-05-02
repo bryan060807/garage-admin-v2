@@ -989,6 +989,7 @@ const sanitizedReviewSnapshot = sanitizeActionReviewSnapshot(
   },
   {
     phase: "approved",
+    actionId: "audit-review-1",
     actionType: "restart-service",
     target: "trackmaster-ui",
     targetServiceId: "trackmaster-ui",
@@ -1008,6 +1009,7 @@ const mergedReviewInput = mergeActionReviewIntoInput(
   reviewSnapshot,
   {
     phase: "approved",
+    actionId: "audit-review-1",
     actionType: "restart-service",
     target: "trackmaster-ui",
     targetServiceId: "trackmaster-ui",
@@ -1023,7 +1025,9 @@ assert.ok(!Object.prototype.hasOwnProperty.call(sanitizedReviewSnapshot, "logs")
 assert.ok(!Object.prototype.hasOwnProperty.call(sanitizedReviewSnapshot.approvalContext.gate, "envValue"));
 assert.ok(!Object.prototype.hasOwnProperty.call(sanitizedReviewSnapshot.approvalContext.dependencyRollup.items[0], "endpoint"));
 assert.ok(!Object.prototype.hasOwnProperty.call(sanitizedReviewSnapshot.approvalContext.dependencyRollup.items[0], "token"));
+assert.equal(sanitizedReviewSnapshot.actionId, "audit-review-1");
 assert.equal(mergedReviewInput.actionReview.approved.phase, "approved");
+assert.equal(mergedReviewInput.actionReview.approved.actionId, "audit-review-1");
 assert.equal(mergedReviewInput.actionReview.latest, "approved");
 results.push({
   name: "backend action review sanitizer and merger keep only allowlisted snapshot fields",

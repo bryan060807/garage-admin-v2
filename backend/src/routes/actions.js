@@ -1,3 +1,4 @@
+const { randomUUID } = require("crypto");
 const express = require("express");
 const bridgeClient = require("../lib/bridgeClient");
 const repository = require("../lib/repository");
@@ -513,6 +514,7 @@ async function createAction(input) {
   const host = normalizeHost(input.host, serviceName);
   const target = serviceName || input.target || "garage-control-plane";
   const status = definition.requiresApproval ? "pending" : "approved";
+  const actionId = randomUUID();
   const auditInput = mergeActionReviewIntoInput(
     {
       serviceName: serviceName || null,
@@ -524,6 +526,7 @@ async function createAction(input) {
     input.actionReviewSnapshot,
     {
       phase: "requested",
+      actionId,
       actionType,
       target,
       targetServiceId: serviceName || target,
@@ -535,6 +538,7 @@ async function createAction(input) {
   );
 
   return repository.createAudit({
+    id: actionId,
     actionType,
     target,
     status,
@@ -778,6 +782,7 @@ router.use((error, _req, res, next) => {
 });
 
 router.__testables = {
+  createAction,
   mergeActionReviewIntoInput,
   mergeActionReviewSnapshots,
   sanitizeActionReviewSnapshot,

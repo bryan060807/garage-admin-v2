@@ -131,7 +131,7 @@ async function createAudit(input) {
      VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)
      RETURNING id, action_type, target, status, requested_by, approved_by, input, result, created_at`,
     [
-      randomUUID(),
+      input.id || randomUUID(),
       input.actionType,
       input.target,
       input.status || "pending",
