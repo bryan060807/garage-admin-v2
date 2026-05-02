@@ -680,6 +680,34 @@ button {
   font-size: 0.76rem;
 }
 
+.service-inventory-sources {
+  display: flex;
+  flex: 1 0 100%;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.service-inventory-sources-label,
+.service-inventory-sources-empty {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+}
+
+.service-inventory-sources-empty {
+  white-space: nowrap;
+}
+
+.service-inventory-source-chip {
+  min-height: 20px;
+  padding: 2px 8px;
+  font-size: 0.68rem;
+}
+
+.service-inventory-source-hint {
+  flex: 1 0 100%;
+}
+
 .signal-dependency-chip {
   min-width: min(100%, 240px);
   flex: 1 1 240px;

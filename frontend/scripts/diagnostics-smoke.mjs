@@ -10,6 +10,10 @@ import { extractServiceDiagnosis, extractServiceLogEvents } from "../src/diagnos
 
 const FRESHNESS_NOW = Date.parse("2026-05-01T12:00:00Z");
 
+function indexInventorySources(sourceBreakdown) {
+  return Object.fromEntries((Array.isArray(sourceBreakdown) ? sourceBreakdown : []).map((source) => [source.key, source]));
+}
+
 function buildServiceInventory() {
   return [
     {
@@ -656,6 +660,7 @@ const inventoryFreshnessCases = [
       assert.equal(summary.ageHint, "checked 34s ago");
       assert.equal(summary.provenanceText, "Based on response.checkedAt");
       assert.equal(summary.hint, "");
+      assert.equal(summary.sourceBreakdown[0].compactLabel, "services fresh");
     },
   },
   {
@@ -685,6 +690,38 @@ const inventoryFreshnessCases = [
       assert.equal(summary.ageHint, "checked 5m ago");
       assert.equal(summary.provenanceText, "Based on sources.windowsPm2.checkedAt");
       assert.equal(summary.hint, "");
+      const sourceBreakdown = indexInventorySources(summary.sourceBreakdown);
+      assert.equal(sourceBreakdown.windowsPm2.bucket, "aging");
+      assert.equal(sourceBreakdown.fedoraBridge.bucket, "aging");
+    },
+  },
+  {
+    name: "inventory source breakdown shows fresh and aging buckets independently",
+    payload: {
+      sources: {
+        windowsPm2: {
+          checkedAt: "2026-05-01T11:59:20Z",
+        },
+        fedoraBridge: {
+          checkedAt: "2026-05-01T11:55:15Z",
+        },
+      },
+      items: [
+        {
+          name: "trackmaster-api",
+          lastCheckedAt: "2026-05-01T11:59:50Z",
+        },
+      ],
+    },
+    verify(freshness, summary) {
+      const sourceBreakdown = indexInventorySources(summary.sourceBreakdown);
+      assert.equal(freshness.bucket, "fresh");
+      assert.equal(sourceBreakdown.windowsPm2.bucket, "fresh");
+      assert.equal(sourceBreakdown.windowsPm2.compactLabel, "windowsPm2 fresh");
+      assert.equal(sourceBreakdown.fedoraBridge.bucket, "aging");
+      assert.equal(sourceBreakdown.fedoraBridge.compactLabel, "fedoraBridge aging");
+      assert.equal(summary.sourceBreakdownSummary, "Sources: windowsPm2 fresh | fedoraBridge aging");
+      assert.equal(summary.sourceHint, "");
     },
   },
   {
@@ -760,6 +797,36 @@ const inventoryFreshnessCases = [
     },
   },
   {
+    name: "inventory source breakdown names stale and unknown sources",
+    payload: {
+      sources: {
+        windowsPm2: {
+          checkedAt: "2026-05-01T11:48:45Z",
+          status: "degraded",
+        },
+        fedoraBridge: {
+          ok: true,
+          error: "",
+        },
+        inventoryCache: {
+          checkedAt: "2026-05-01T11:59:35Z",
+          label: "Inventory Cache",
+        },
+      },
+    },
+    verify(freshness, summary) {
+      const sourceBreakdown = indexInventorySources(summary.sourceBreakdown);
+      assert.equal(freshness.bucket, "fresh");
+      assert.equal(sourceBreakdown.windowsPm2.bucket, "stale");
+      assert.equal(sourceBreakdown.windowsPm2.status, "degraded");
+      assert.equal(sourceBreakdown.fedoraBridge.bucket, "unknown");
+      assert.equal(sourceBreakdown.fedoraBridge.ok, true);
+      assert.equal(sourceBreakdown.inventoryCache.displayLabel, "Inventory Cache");
+      assert.equal(sourceBreakdown.inventoryCache.bucket, "fresh");
+      assert.equal(summary.sourceHint, "windowsPm2 inventory stale | fedoraBridge inventory timestamp unknown");
+    },
+  },
+  {
     name: "inventory freshness returns unknown when timestamps are missing",
     payload: {
       items: [{}],
@@ -775,6 +842,7 @@ const inventoryFreshnessCases = [
       assert.equal(summary.ageHint, "");
       assert.equal(summary.provenanceText, "Timestamp source unknown");
       assert.equal(summary.hint, "Inventory timestamp unavailable.");
+      assert.equal(summary.sourceBreakdownSummary, "Sources: unknown");
     },
   },
 ];

@@ -3225,6 +3225,37 @@ export default function App() {
                   {serviceInventoryFreshness.provenanceText ? (
                     <span className="service-inventory-provenance">{serviceInventoryFreshness.provenanceText}</span>
                   ) : null}
+                  <div
+                    className="service-inventory-sources"
+                    title={
+                      serviceInventoryFreshness.sourceBreakdownTitle ||
+                      serviceInventoryFreshness.sourceBreakdownSummary ||
+                      "Sources: unknown"
+                    }
+                  >
+                    <span className="service-inventory-sources-label">Sources:</span>
+                    {serviceInventoryFreshness.sourceBreakdown.length ? (
+                      serviceInventoryFreshness.sourceBreakdown.map((source) => (
+                        <span
+                          key={source.key}
+                          className={`signal-freshness-badge signal-freshness-badge-${source.bucket} service-inventory-source-chip`}
+                          title={source.title || source.compactLabel}
+                        >
+                          {source.compactLabel}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="service-inventory-sources-empty">unknown</span>
+                    )}
+                  </div>
+                  {serviceInventoryFreshness.sourceHint ? (
+                    <span
+                      className="service-inventory-hint service-inventory-source-hint"
+                      title={serviceInventoryFreshness.sourceHintTitle || serviceInventoryFreshness.sourceHint}
+                    >
+                      {serviceInventoryFreshness.sourceHint}
+                    </span>
+                  ) : null}
                   {serviceInventoryFreshness.hint ? (
                     <span className="service-inventory-hint">{serviceInventoryFreshness.hint}</span>
                   ) : null}

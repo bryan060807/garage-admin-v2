@@ -550,6 +550,121 @@ function getInventoryFreshnessHint(bucket) {
   return "";
 }
 
+function readInventorySourceDisplayLabel(sourceName, metadata) {
+  return readText(metadata?.displayName, metadata?.name, metadata?.label, sourceName);
+}
+
+function formatInventorySourceBucketLabel(bucket) {
+  return bucket === "unknown" ? "unknown" : bucket;
+}
+
+function formatInventorySourceHintLabel(source) {
+  if (source.bucket === "stale") {
+    return `${source.displayLabel} inventory stale`;
+  }
+
+  return `${source.displayLabel} inventory timestamp unknown`;
+}
+
+function describeInventorySource(sourceName, value, options = {}) {
+  const metadata = toPlainObject(value);
+  const freshness = classifyFreshnessTimestampInfo(
+    parseTimestampCandidate(
+      {
+        source: `sources.${sourceName}.checkedAt`,
+        sourceType: "source",
+        sourceName,
+        timestampField: "checkedAt",
+      },
+      metadata.checkedAt,
+    ),
+    options,
+  );
+  const displayLabel = readInventorySourceDisplayLabel(sourceName, metadata);
+  const status = readText(metadata.status);
+  const ok = typeof metadata.ok === "boolean" ? metadata.ok : null;
+  const error = readText(metadata.error);
+  const compactLabel = `${displayLabel} ${formatInventorySourceBucketLabel(freshness.bucket)}`;
+
+  return {
+    key: sourceName,
+    sourceKey: sourceName,
+    displayLabel,
+    checkedAt: freshness.timestamp,
+    bucket: freshness.bucket,
+    ageLabel: freshness.ageLabel,
+    status,
+    ok,
+    error,
+    compactLabel,
+    title: [
+      displayLabel,
+      displayLabel !== sourceName ? `Source key: ${sourceName}` : "",
+      freshness.bucket === "unknown" ? "Inventory timestamp unavailable" : `Freshness: ${formatInventorySourceBucketLabel(freshness.bucket)}`,
+      freshness.ageLabel ? `Checked ${freshness.ageLabel} ago` : "",
+      freshness.timestamp ? `Timestamp: ${freshness.timestamp}` : "",
+      status ? `Status: ${status}` : "",
+      ok == null ? "" : `OK: ${ok ? "yes" : "no"}`,
+      error ? `Error: ${error}` : "",
+    ]
+      .filter(Boolean)
+      .join(" | "),
+  };
+}
+
+function buildInventorySourceHint(sourceBreakdown) {
+  const affectedSources = normalizeCollection(sourceBreakdown).filter(
+    (source) => source?.bucket === "stale" || source?.bucket === "unknown",
+  );
+
+  if (!affectedSources.length) {
+    return {
+      text: "",
+      title: "",
+    };
+  }
+
+  if (affectedSources.length <= 2) {
+    const text = affectedSources.map((source) => formatInventorySourceHintLabel(source)).join(" | ");
+    return {
+      text,
+      title: text,
+    };
+  }
+
+  const staleCount = affectedSources.filter((source) => source.bucket === "stale").length;
+  const unknownCount = affectedSources.filter((source) => source.bucket === "unknown").length;
+
+  let text = "Some inventory sources may be stale";
+
+  if (staleCount && unknownCount) {
+    text = "Some inventory sources may be stale or have unknown timestamps";
+  } else if (!staleCount && unknownCount) {
+    text = "Some inventory sources have unknown timestamps";
+  }
+
+  return {
+    text,
+    title: affectedSources.map((source) => formatInventorySourceHintLabel(source)).join(" | "),
+  };
+}
+
+function describeInventorySources(sources, options = {}) {
+  const items = Object.entries(toPlainObject(sources)).map(([sourceName, value]) =>
+    describeInventorySource(sourceName, value, options),
+  );
+  const summaryText = items.length ? `Sources: ${items.map((item) => item.compactLabel).join(" | ")}` : "Sources: unknown";
+  const hint = buildInventorySourceHint(items);
+
+  return {
+    items,
+    summaryText,
+    title: items.length ? items.map((item) => item.title).filter(Boolean).join(" | ") : "No inventory sources declared",
+    hint: hint.text,
+    hintTitle: hint.title,
+  };
+}
+
 export function classifyInventoryFreshness(payload, options = {}) {
   const services = Array.isArray(options.services) ? options.services : payload?.items;
   return classifyFreshnessTimestampInfo(resolveInventoryFreshnessTimestamp(payload, services), options);
@@ -557,6 +672,7 @@ export function classifyInventoryFreshness(payload, options = {}) {
 
 export function describeInventoryFreshness(payload, options = {}) {
   const freshness = classifyInventoryFreshness(payload, options);
+  const sourceBreakdown = describeInventorySources(payload?.sources, options);
   const ageHint = freshness.ageLabel ? `checked ${freshness.ageLabel} ago` : "";
   const hint = getInventoryFreshnessHint(freshness.bucket);
   const label = formatInventoryFreshnessLabel(freshness.bucket);
@@ -568,6 +684,11 @@ export function describeInventoryFreshness(payload, options = {}) {
     ageHint,
     hint,
     provenanceText,
+    sourceBreakdown: sourceBreakdown.items,
+    sourceBreakdownSummary: sourceBreakdown.summaryText,
+    sourceBreakdownTitle: sourceBreakdown.title,
+    sourceHint: sourceBreakdown.hint,
+    sourceHintTitle: sourceBreakdown.hintTitle,
     title: [label, ageHint, freshness.timestamp ? `Timestamp: ${freshness.timestamp}` : "", freshness.timestampSource ? `Timestamp source: ${freshness.timestampSource}` : "", provenanceText, hint]
       .filter(Boolean)
       .join(" · "),
