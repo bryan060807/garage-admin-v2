@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 
-import { buildActionApprovalContext, evaluateApprovalFreshnessGate } from "../src/actionApproval.js";
+import {
+  buildActionApprovalContext,
+  buildActionApprovalContextFromReviewSnapshot,
+  buildActionReviewSnapshot,
+  evaluateApprovalFreshnessGate,
+  selectActionReviewSnapshot,
+} from "../src/actionApproval.js";
 import { buildAssistantContext, buildAssistantRequestPayload } from "../src/assistantContext.js";
 import {
   formatAssistantContextForTone,
@@ -22,7 +28,9 @@ import {
 import { extractServiceDiagnosis, extractServiceLogEvents } from "../src/diagnostics.js";
 
 const require = createRequire(import.meta.url);
+const actionsRouter = require("../../backend/src/routes/actions.js");
 const chatRouter = require("../../backend/src/routes/chat.js");
+const { mergeActionReviewIntoInput, sanitizeActionReviewSnapshot } = actionsRouter.__testables;
 const { buildGroundedResponse, classifyAssistantIntent } = chatRouter.__testables;
 
 const FRESHNESS_NOW = Date.parse("2026-05-01T12:00:00Z");
@@ -873,6 +881,154 @@ for (const testCase of approvalFreshnessCases) {
     dependencyFreshness: testCase.context.dependencyRollup?.freshnessSummary || "none",
   });
 }
+
+const reviewSnapshotContext = buildActionApprovalContext({
+  actionType: "restart-service",
+  actionMetadata: {
+    actionType: "restart-service",
+    target: "trackmaster-ui",
+    requestedBy: "operator-a",
+    approvedBy: "operator-b",
+    input: {
+      serviceName: "trackmaster-ui",
+      host: "windows",
+    },
+  },
+  service: findService(staleDependencyApprovalServices, "trackmaster-ui"),
+  services: staleDependencyApprovalServices,
+  inventorySnapshot: buildApprovalInventorySnapshot({
+    checkedAt: "2026-05-01T11:45:00Z",
+  }),
+  riskContext: { supported: true },
+  now: FRESHNESS_NOW,
+});
+const reviewSnapshot = buildActionReviewSnapshot({
+  phase: "approved",
+  actionType: "restart-service",
+  actionMetadata: {
+    id: "audit-review-1",
+    actionType: "restart-service",
+    target: "trackmaster-ui",
+    requestedBy: "operator-a",
+    approvedBy: "operator-b",
+    input: {
+      serviceName: "trackmaster-ui",
+      host: "windows",
+    },
+  },
+  service: findService(staleDependencyApprovalServices, "trackmaster-ui"),
+  approvalContext: reviewSnapshotContext,
+  requestedBy: "operator-a",
+  approvedBy: "operator-b",
+  freshnessAcknowledged: true,
+  gateDisabledReason: evaluateApprovalFreshnessGate(reviewSnapshotContext).reason,
+  now: FRESHNESS_NOW,
+});
+const hydratedReviewContext = buildActionApprovalContextFromReviewSnapshot(reviewSnapshot);
+
+assert.equal(reviewSnapshot.phase, "approved");
+assert.equal(reviewSnapshot.actionType, "restart-service");
+assert.equal(reviewSnapshot.targetServiceId, "trackmaster-ui");
+assert.equal(reviewSnapshot.host, "windows");
+assert.equal(reviewSnapshot.runtimeManager, "pm2");
+assert.equal(reviewSnapshot.requestedBy, "operator-a");
+assert.equal(reviewSnapshot.approvedBy, "operator-b");
+assert.equal(reviewSnapshot.approvalContext.inventoryFreshness.bucket, "stale");
+assert.equal(reviewSnapshot.approvalContext.dependencyRollup?.freshnessSummary, "1 stale");
+assert.equal(reviewSnapshot.approvalContext.gate?.freshnessAcknowledged, true);
+assert.ok(reviewSnapshot.approvalContext.gate?.gateDisabledReason.toLowerCase().includes("stale or unknown"));
+assert.ok(!Object.prototype.hasOwnProperty.call(reviewSnapshot, "logs"));
+assert.ok(!Object.prototype.hasOwnProperty.call(reviewSnapshot.approvalContext.dependencyRollup.items[0], "endpoint"));
+assert.equal(hydratedReviewContext.inventoryFreshness.bucket, "stale");
+assert.equal(hydratedReviewContext.dependencyRollup?.freshnessSummary, "1 stale");
+results.push({
+  name: "action review snapshot captures sanitized freshness and approval metadata",
+  reviewPhase: reviewSnapshot.phase,
+  reviewGate: reviewSnapshot.approvalContext.gate?.policy || "none",
+  reviewDependencyFreshness: reviewSnapshot.approvalContext.dependencyRollup?.freshnessSummary || "none",
+});
+
+const selectedReviewSnapshot = selectActionReviewSnapshot(
+  {
+    requested: {
+      ...reviewSnapshot,
+      phase: "requested",
+    },
+    executed: {
+      ...reviewSnapshot,
+      phase: "executed",
+    },
+    latest: "executed",
+  },
+  "approved",
+);
+
+assert.equal(selectedReviewSnapshot?.phase, "executed");
+
+const sanitizedReviewSnapshot = sanitizeActionReviewSnapshot(
+  {
+    ...reviewSnapshot,
+    logs: "SHOULD_NOT_BE_STORED",
+    approvalContext: {
+      ...reviewSnapshot.approvalContext,
+      gate: {
+        ...reviewSnapshot.approvalContext.gate,
+        envValue: "SECRET",
+      },
+      dependencyRollup: {
+        ...reviewSnapshot.approvalContext.dependencyRollup,
+        items: [
+          {
+            ...reviewSnapshot.approvalContext.dependencyRollup.items[0],
+            endpoint: "http://secret.internal",
+            token: "SECRET",
+          },
+        ],
+      },
+    },
+  },
+  {
+    phase: "approved",
+    actionType: "restart-service",
+    target: "trackmaster-ui",
+    targetServiceId: "trackmaster-ui",
+    targetServiceName: "trackmaster-ui",
+    host: "windows",
+    requestedBy: "operator-a",
+    approvedBy: "operator-b",
+  },
+);
+const mergedReviewInput = mergeActionReviewIntoInput(
+  {
+    serviceName: "trackmaster-ui",
+    host: "windows",
+    reason: "Routine restart",
+    requiresApproval: true,
+  },
+  reviewSnapshot,
+  {
+    phase: "approved",
+    actionType: "restart-service",
+    target: "trackmaster-ui",
+    targetServiceId: "trackmaster-ui",
+    targetServiceName: "trackmaster-ui",
+    host: "windows",
+    requestedBy: "operator-a",
+    approvedBy: "operator-b",
+  },
+);
+
+assert.ok(sanitizedReviewSnapshot);
+assert.ok(!Object.prototype.hasOwnProperty.call(sanitizedReviewSnapshot, "logs"));
+assert.ok(!Object.prototype.hasOwnProperty.call(sanitizedReviewSnapshot.approvalContext.gate, "envValue"));
+assert.ok(!Object.prototype.hasOwnProperty.call(sanitizedReviewSnapshot.approvalContext.dependencyRollup.items[0], "endpoint"));
+assert.ok(!Object.prototype.hasOwnProperty.call(sanitizedReviewSnapshot.approvalContext.dependencyRollup.items[0], "token"));
+assert.equal(mergedReviewInput.actionReview.approved.phase, "approved");
+assert.equal(mergedReviewInput.actionReview.latest, "approved");
+results.push({
+  name: "backend action review sanitizer and merger keep only allowlisted snapshot fields",
+  storedReviewPhases: Object.keys(mergedReviewInput.actionReview).sort().join(","),
+});
 
 const freshnessCases = [
   {

@@ -1,5 +1,12 @@
 import { Component, useEffect, useRef, useState } from "react";
-import { buildActionApprovalContext, evaluateApprovalFreshnessGate, formatApprovalFreshnessSummary } from "./actionApproval";
+import {
+  buildActionApprovalContext,
+  buildActionApprovalContextFromReviewSnapshot,
+  buildActionReviewSnapshot,
+  evaluateApprovalFreshnessGate,
+  formatApprovalFreshnessSummary,
+  selectActionReviewSnapshot,
+} from "./actionApproval";
 import { formatActionTypeLabel, getActionRiskProfile, shouldShowActionApprovalPreview } from "./actionRisk";
 import { buildAssistantContext, buildAssistantRequestPayload } from "./assistantContext";
 import { ASSISTANT_LOOKUP_CHIPS, buildAssistantLookupInvocation, createAssistantSelection } from "./assistantLookup";
@@ -2374,6 +2381,102 @@ function buildActionApprovalDetails(actionType, actionRecord, serviceRecord, opt
   ]);
 }
 
+function preferredActionReviewPhaseForStatus(status) {
+  const normalized = String(status || "").trim().toLowerCase();
+
+  if (normalized === "approved") {
+    return "approved";
+  }
+
+  if (normalized === "executing" || normalized === "completed" || normalized === "failed") {
+    return "executed";
+  }
+
+  return "requested";
+}
+
+function shouldUsePersistedActionReview(snapshot) {
+  const riskProfile = snapshot?.approvalContext?.riskProfile;
+
+  if (!riskProfile || typeof riskProfile !== "object") {
+    return false;
+  }
+
+  return riskProfile.requiresApproval === true || riskProfile.riskLevel === "caution" || riskProfile.riskLevel === "dangerous";
+}
+
+function buildPersistedActionReviewDetails(snapshot) {
+  const riskProfile = snapshot?.approvalContext?.riskProfile;
+  const gate = snapshot?.approvalContext?.gate;
+
+  if (!shouldUsePersistedActionReview(snapshot)) {
+    return [];
+  }
+
+  return compactDetailItems([
+    {
+      label: "Action",
+      value: readServiceString(snapshot?.actionName, actionLabel(snapshot?.actionType), "Action"),
+    },
+    {
+      label: "Target service",
+      value: readServiceString(snapshot?.targetServiceName, snapshot?.targetServiceId, "Unknown service"),
+    },
+    {
+      label: "Host",
+      value: readServiceString(snapshot?.host, "Unknown"),
+    },
+    {
+      label: "Runtime / manager",
+      value: readServiceString(snapshot?.runtimeManager, "Unknown runtime"),
+    },
+    {
+      label: "Risk level",
+      value: readServiceString(riskProfile?.label, "Unknown"),
+    },
+    {
+      label: "Requested by",
+      value: readServiceString(snapshot?.requestedBy, "Not set"),
+    },
+    {
+      label: "Approved by",
+      value: readServiceString(snapshot?.approvedBy, "Not set"),
+    },
+    {
+      label: "Requires approval",
+      value: riskProfile?.requiresApproval ? "Yes" : "No",
+    },
+    {
+      label: "Expected impact",
+      value: readServiceString(riskProfile?.expectedImpact, "Not recorded"),
+    },
+    {
+      label: "Rollback note",
+      value: readServiceString(riskProfile?.rollbackNote, "Not recorded"),
+    },
+    gate?.requiresAcknowledgement || gate?.freshnessAcknowledged
+      ? {
+          label: "Stale context acknowledged",
+          value: gate.freshnessAcknowledged ? "Yes" : "No",
+        }
+      : null,
+    gate?.gateDisabledReason
+      ? {
+          label: "Gate reason",
+          value: gate.gateDisabledReason,
+        }
+      : null,
+    {
+      label: "Snapshot phase",
+      value: formatStatusLabel(snapshot?.phase),
+    },
+    {
+      label: "Captured at",
+      value: formatCreatedAt(snapshot?.capturedAt),
+    },
+  ]);
+}
+
 function getHealthStatusSummary(healthResult) {
   if (!healthResult) {
     return "No health result yet.";
@@ -3028,6 +3131,37 @@ export default function App() {
     });
   }
 
+  function buildActionReviewSnapshotPayload({
+    phase = "requested",
+    actionType,
+    actionRecord,
+    serviceRecord = null,
+    approvalContext = null,
+    requestedBy = "",
+    approvedBy = "",
+    freshnessAcknowledged = false,
+    gateDisabledReason = "",
+  } = {}) {
+    if (!actionType || !actionRecord) {
+      return null;
+    }
+
+    return buildActionReviewSnapshot({
+      phase,
+      actionType,
+      actionMetadata: actionRecord,
+      service: serviceRecord,
+      approvalContext:
+        approvalContext ||
+        getApprovalContextForAction(actionType, actionRecord, serviceRecord),
+      requestedBy,
+      approvedBy,
+      freshnessAcknowledged,
+      gateDisabledReason,
+      now: Date.now(),
+    });
+  }
+
   useEffect(() => {
     if (!selectedService) {
       setLogs(null);
@@ -3164,6 +3298,30 @@ export default function App() {
       if (!requestedBy) {
         throw new Error("requestedBy is required to create an action.");
       }
+      const actionRecord = {
+        actionType,
+        target: selectedService,
+        requestedBy,
+        input: {
+          serviceName: selectedService,
+          host: selectedServiceRecord?.host || "unknown",
+          manager: getServiceManager(selectedServiceRecord),
+          reason: options.reason || "",
+        },
+      };
+      const approvalContext = getApprovalContextForAction(actionType, actionRecord, selectedServiceRecord);
+      const approvalDecision = evaluateApprovalFreshnessGate(approvalContext, false);
+      const actionReviewSnapshot = buildActionReviewSnapshotPayload({
+        phase: "requested",
+        actionType,
+        actionRecord,
+        serviceRecord: selectedServiceRecord,
+        approvalContext,
+        requestedBy,
+        approvedBy: approvalContext?.riskProfile?.requiresApproval ? "" : requestedBy,
+        freshnessAcknowledged: false,
+        gateDisabledReason: approvalDecision.allowed ? "" : approvalDecision.reason,
+      });
 
       const response = await fetch("/api/actions", {
         method: "POST",
@@ -3176,6 +3334,7 @@ export default function App() {
           host: selectedServiceRecord?.host || "unknown",
           requestedBy,
           reason: options.reason || "",
+          actionReviewSnapshot,
         }),
       });
 
@@ -3186,7 +3345,9 @@ export default function App() {
       }
 
       setRestartResult(data);
-      setApprovalFreshnessAcknowledged(entry.id, false);
+      if (data.actionId) {
+        setApprovalFreshnessAcknowledged(data.actionId, false);
+      }
       await refreshAudit();
     } catch (error) {
       setRestartError(error.message);
@@ -3216,12 +3377,34 @@ export default function App() {
     setRestartResult(null);
 
     try {
+      const actionServiceRecord = findServiceForAction(entry, serviceItems);
+      const freshnessAcknowledged = Boolean(approvalFreshnessAcknowledgements[String(entry.id || "").trim()]);
+      const actionRecord = {
+        ...entry,
+        approvedBy,
+      };
+      const approvalContext = getApprovalContextForAction(entry.actionType, actionRecord, actionServiceRecord);
+      const approvalDecision = evaluateApprovalFreshnessGate(approvalContext, freshnessAcknowledged);
+      const actionReviewSnapshot = buildActionReviewSnapshotPayload({
+        phase: "approved",
+        actionType: entry.actionType,
+        actionRecord,
+        serviceRecord: actionServiceRecord,
+        approvalContext,
+        requestedBy: entry.requestedBy,
+        approvedBy,
+        freshnessAcknowledged,
+        gateDisabledReason: approvalDecision.allowed ? "" : approvalDecision.reason,
+      });
       const response = await fetch(`/api/actions/${encodeURIComponent(entry.id)}/approve`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ approvedBy }),
+        body: JSON.stringify({
+          approvedBy,
+          actionReviewSnapshot,
+        }),
       });
       const data = await response.json();
 
@@ -3299,6 +3482,29 @@ export default function App() {
       if (!requestedBy) {
         throw new Error("requestedBy is required to run an action.");
       }
+      const actionRecord = {
+        actionType,
+        target: selectedService,
+        requestedBy,
+        approvedBy: requestedBy,
+        input: {
+          serviceName: selectedService,
+          host: selectedServiceRecord?.host || "unknown",
+          manager: getServiceManager(selectedServiceRecord),
+          reason: "",
+        },
+      };
+      const approvalContext = getApprovalContextForAction(actionType, actionRecord, selectedServiceRecord);
+      const actionReviewSnapshot = buildActionReviewSnapshotPayload({
+        phase: "requested",
+        actionType,
+        actionRecord,
+        serviceRecord: selectedServiceRecord,
+        approvalContext,
+        requestedBy,
+        approvedBy: requestedBy,
+        freshnessAcknowledged: false,
+      });
 
       const createResponse = await fetch("/api/actions", {
         method: "POST",
@@ -3311,6 +3517,7 @@ export default function App() {
           host: selectedServiceRecord?.host || "unknown",
           requestedBy,
           reason: "",
+          actionReviewSnapshot,
         }),
       });
       const created = await createResponse.json();
@@ -3328,9 +3535,41 @@ export default function App() {
 
       setRestartResult(created);
       setActionBusyId(action.id);
+      const executeActionRecord = {
+        ...action,
+        requestedBy,
+        approvedBy: requestedBy,
+        input: {
+          ...action.input,
+          serviceName: action.input?.serviceName || selectedService,
+          host: action.input?.host || selectedServiceRecord?.host || "unknown",
+          manager: action.input?.manager || getServiceManager(selectedServiceRecord),
+        },
+      };
+      const executeApprovalContext = getApprovalContextForAction(
+        actionType,
+        executeActionRecord,
+        selectedServiceRecord,
+      );
+      const executionActionReviewSnapshot = buildActionReviewSnapshotPayload({
+        phase: "executed",
+        actionType,
+        actionRecord: executeActionRecord,
+        serviceRecord: selectedServiceRecord,
+        approvalContext: executeApprovalContext,
+        requestedBy,
+        approvedBy: requestedBy,
+        freshnessAcknowledged: false,
+      });
 
       const executeResponse = await fetch(`/api/actions/${encodeURIComponent(action.id)}/execute`, {
         method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          actionReviewSnapshot: executionActionReviewSnapshot,
+        }),
       });
       const executed = await executeResponse.json();
 
@@ -3355,8 +3594,29 @@ export default function App() {
     setRestartResult(null);
 
     try {
+      const actionServiceRecord = findServiceForAction(entry, serviceItems);
+      const freshnessAcknowledged = Boolean(approvalFreshnessAcknowledgements[String(entry.id || "").trim()]);
+      const approvalContext = getApprovalContextForAction(entry.actionType, entry, actionServiceRecord);
+      const approvalDecision = evaluateApprovalFreshnessGate(approvalContext, freshnessAcknowledged);
+      const actionReviewSnapshot = buildActionReviewSnapshotPayload({
+        phase: "executed",
+        actionType: entry.actionType,
+        actionRecord: entry,
+        serviceRecord: actionServiceRecord,
+        approvalContext,
+        requestedBy: entry.requestedBy,
+        approvedBy: entry.approvedBy,
+        freshnessAcknowledged,
+        gateDisabledReason: approvalDecision.allowed ? "" : approvalDecision.reason,
+      });
       const response = await fetch(`/api/actions/${encodeURIComponent(entry.id)}/execute`, {
         method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          actionReviewSnapshot,
+        }),
       });
       const data = await response.json();
 
@@ -5565,15 +5825,19 @@ export default function App() {
                   const auditApprovalContext = auditNeedsApprovalContext
                     ? getApprovalContextForAction(entry.actionType, entry, auditServiceRecord)
                     : null;
-                  const auditReviewDetails = shouldShowActionApprovalPreview(
-                    entry.actionType,
-                    entry,
-                    auditRiskContext,
-                  )
-                    ? buildActionApprovalDetails(entry.actionType, entry, auditServiceRecord, {
-                        riskProfile: auditRiskProfile,
-                      })
-                    : [];
+                  const auditReviewSnapshot = selectActionReviewSnapshot(
+                    entry.actionReview || entry.input?.actionReview,
+                    preferredActionReviewPhaseForStatus(entry.status),
+                  );
+                  const auditPersistedApprovalContext = buildActionApprovalContextFromReviewSnapshot(auditReviewSnapshot);
+                  const auditDisplayApprovalContext = auditPersistedApprovalContext || auditApprovalContext;
+                  const auditReviewDetails = shouldUsePersistedActionReview(auditReviewSnapshot)
+                    ? buildPersistedActionReviewDetails(auditReviewSnapshot)
+                    : shouldShowActionApprovalPreview(entry.actionType, entry, auditRiskContext)
+                      ? buildActionApprovalDetails(entry.actionType, entry, auditServiceRecord, {
+                          riskProfile: auditRiskProfile,
+                        })
+                      : [];
                   const auditFreshnessAcknowledged = Boolean(
                     approvalFreshnessAcknowledgements[String(entry.id || "").trim()],
                   );
@@ -5712,7 +5976,7 @@ export default function App() {
                                 ))}
                               </div>
                               <ApprovalFreshnessSection
-                                approvalContext={auditApprovalContext}
+                                approvalContext={auditDisplayApprovalContext}
                                 onRefreshInventory={handleRefreshInventory}
                                 refreshBusy={inventoryRefreshBusy}
                                 refreshError={inventoryRefreshError}

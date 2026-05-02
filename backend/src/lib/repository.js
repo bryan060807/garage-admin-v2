@@ -28,6 +28,8 @@ function mapServiceFact(row) {
 }
 
 function mapAudit(row) {
+  const input = row.input && typeof row.input === "object" ? row.input : {};
+
   return {
     id: row.id,
     actionType: row.action_type,
@@ -35,7 +37,8 @@ function mapAudit(row) {
     status: row.status,
     requestedBy: row.requested_by,
     approvedBy: row.approved_by,
-    input: row.input,
+    input,
+    actionReview: input.actionReview || null,
     result: row.result,
     createdAt: row.created_at,
   };
@@ -142,13 +145,15 @@ async function createAudit(input) {
 }
 
 async function updateAudit(id, input) {
+  const hasInput = Object.prototype.hasOwnProperty.call(input, "input");
   const hasResult = Object.prototype.hasOwnProperty.call(input, "result");
   const result = await query(
     `UPDATE action_audit
      SET
        status = COALESCE($2, status),
        approved_by = COALESCE($3, approved_by),
-       result = COALESCE($4::jsonb, result)
+       result = COALESCE($4::jsonb, result),
+       input = COALESCE($5::jsonb, input)
      WHERE id = $1
      RETURNING id, action_type, target, status, requested_by, approved_by, input, result, created_at`,
     [
@@ -156,6 +161,7 @@ async function updateAudit(id, input) {
       input.status || null,
       input.approvedBy || null,
       hasResult ? JSON.stringify(input.result || {}) : null,
+      hasInput ? JSON.stringify(input.input || {}) : null,
     ],
   );
 
