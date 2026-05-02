@@ -10,6 +10,12 @@ import { extractServiceDiagnosis } from "./diagnostics";
 const RIGHT_PANEL_SPLIT_STORAGE_KEY = "garage-admin-v2:right-panel-split";
 const LAYOUT_CUSTOMIZATION_VERSION = 1;
 const LAYOUT_CUSTOMIZATION_STORAGE_KEY = `garage-admin-v2:experimental-layout:v${LAYOUT_CUSTOMIZATION_VERSION}`;
+const ASSISTANT_MODE_STORAGE_KEY = "garage-admin-v2:assistant-mode";
+const ASSISTANT_MODES = Object.freeze({
+  MINIMIZED: "minimized",
+  DOCKED: "docked",
+  EXPANDED: "expanded",
+});
 const ENABLE_EXPERIMENTAL_LAYOUT_CUSTOMIZATION = ["1", "true", "yes", "on"].includes(
   String(import.meta.env.VITE_ENABLE_EXPERIMENTAL_LAYOUT_CUSTOMIZATION || "").toLowerCase(),
 );
@@ -178,6 +184,85 @@ function removeSavedLayoutPreferences() {
   } catch (_error) {
     // A reset should still update the in-memory layout if storage is blocked.
   }
+}
+
+function normalizeAssistantMode(value) {
+  if (Object.values(ASSISTANT_MODES).includes(value)) {
+    return value;
+  }
+
+  return ASSISTANT_MODES.MINIMIZED;
+}
+
+function loadAssistantMode() {
+  try {
+    if (typeof window === "undefined") {
+      return ASSISTANT_MODES.MINIMIZED;
+    }
+
+    return normalizeAssistantMode(window.localStorage.getItem(ASSISTANT_MODE_STORAGE_KEY));
+  } catch (_error) {
+    return ASSISTANT_MODES.MINIMIZED;
+  }
+}
+
+function saveAssistantMode(mode) {
+  try {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(ASSISTANT_MODE_STORAGE_KEY, normalizeAssistantMode(mode));
+    }
+  } catch (_error) {
+    // localStorage can be unavailable in locked-down browser contexts.
+  }
+}
+
+function formatAssistantHostOwnership(host) {
+  const normalized = String(host || "").trim().toLowerCase();
+
+  if (normalized === "fedora") {
+    return "Fedora control-plane";
+  }
+
+  if (normalized === "windows") {
+    return "Windows runtime/operator";
+  }
+
+  if (normalized === "cross-host" || normalized === "docs") {
+    return "Cross-host docs";
+  }
+
+  return "";
+}
+
+function buildAssistantAttentionState({
+  hasSelectedService = false,
+  unreadCount = 0,
+  diagnosisDetected = false,
+  needsAttention = false,
+} = {}) {
+  const labels = [];
+
+  if (hasSelectedService) {
+    labels.push("Context");
+  }
+
+  if (unreadCount > 0) {
+    labels.push(unreadCount === 1 ? "1 unread" : `${unreadCount} unread`);
+  }
+
+  if (diagnosisDetected) {
+    labels.push("Diagnosis");
+  }
+
+  if (needsAttention) {
+    labels.push("Attention");
+  }
+
+  return {
+    count: labels.length,
+    labels,
+    summary: labels.length ? labels.join(" · ") : "Ready when needed",
+  };
 }
 
 function moveCardInOrder(order, cardId, direction) {
@@ -2532,6 +2617,8 @@ export default function App() {
   const [assistantSelection, setAssistantSelection] = useState(null);
   const [activeAssistantPlanChipId, setActiveAssistantPlanChipId] = useState("");
   const [input, setInput] = useState("");
+  const [assistantMode, setAssistantMode] = useState(loadAssistantMode);
+  const [assistantSeenResponseCount, setAssistantSeenResponseCount] = useState(0);
   const opsGridRef = useRef(null);
   const chatRequestIdRef = useRef(0);
   const skipNextLayoutPersistenceRef = useRef(false);
@@ -2580,6 +2667,27 @@ export default function App() {
 
     return () => document.body.classList.remove("is-resizing-right-stack");
   }, [rightPanelResizing]);
+
+  useEffect(() => {
+    saveAssistantMode(assistantMode);
+  }, [assistantMode]);
+
+  useEffect(() => {
+    if (assistantMode !== ASSISTANT_MODES.EXPANDED) {
+      return undefined;
+    }
+
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setAssistantMode(ASSISTANT_MODES.MINIMIZED);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [assistantMode]);
 
   function setRightPanelSplitFromClientY(clientY) {
     const grid = opsGridRef.current;
@@ -2794,6 +2902,7 @@ export default function App() {
   const logsArchiveItems = normalizeObjectCollection(logsArchive);
   const expandedAuditItemIds = normalizeStringArray(expandedAuditIds);
   const chatMessages = normalizeObjectCollection(messages);
+  const assistantResponseCount = chatMessages.filter((message) => message.role !== "user").length;
   const assistantLookupItems = [...chatMessages]
     .reverse()
     .flatMap((message) => normalizeObjectCollection(message.lookup?.items));
@@ -2805,6 +2914,15 @@ export default function App() {
     services: serviceItems,
     now: Date.now(),
   });
+
+  useEffect(() => {
+    if (assistantMode !== ASSISTANT_MODES.MINIMIZED) {
+      setAssistantSeenResponseCount(assistantResponseCount);
+      return;
+    }
+
+    setAssistantSeenResponseCount((current) => Math.min(current, assistantResponseCount));
+  }, [assistantMode, assistantResponseCount]);
 
   function getApprovalContextForAction(actionType, actionRecord, serviceRecord, dependencyRollup = null) {
     return buildActionApprovalContext({
@@ -4055,8 +4173,264 @@ export default function App() {
     }));
   }
 
+  function handleOpenAssistantExpanded() {
+    setAssistantMode(ASSISTANT_MODES.EXPANDED);
+  }
+
+  function handleDockAssistant() {
+    setAssistantMode(ASSISTANT_MODES.DOCKED);
+  }
+
+  function handleMinimizeAssistant() {
+    setAssistantMode(ASSISTANT_MODES.MINIMIZED);
+  }
+
+  function handleCloseAssistant() {
+    setAssistantSeenResponseCount(assistantResponseCount);
+    setAssistantMode(ASSISTANT_MODES.MINIMIZED);
+  }
+
+  const isAssistantDocked = assistantMode === ASSISTANT_MODES.DOCKED;
+  const isAssistantExpanded = assistantMode === ASSISTANT_MODES.EXPANDED;
+  const assistantUnreadCount =
+    assistantMode === ASSISTANT_MODES.MINIMIZED ? Math.max(0, assistantResponseCount - assistantSeenResponseCount) : 0;
+  const assistantServiceLabel = selectedServiceRecord?.displayName || selectedServiceRecord?.name || selectedService || "";
+  const assistantHostOwnershipLabel = formatAssistantHostOwnership(selectedServiceRecord?.host || assistantContext?.service?.host);
+  const assistantSafetyText =
+    "Read-only chat only. Chat cannot execute restarts, approvals, file writes, or destructive actions.";
+  const assistantNeedsAttention =
+    Boolean(chatError) ||
+    restartApprovalContext?.gate?.blockedUntilRefresh === true ||
+    ["stale", "unknown"].includes(String(assistantContext?.inventory?.freshness?.bucket || "").toLowerCase()) ||
+    assistantLookupItems.some((item) => lookupText(item?.safetyStatus).toLowerCase() === "blocked");
+  const assistantAttentionState = buildAssistantAttentionState({
+    hasSelectedService: Boolean(selectedService),
+    unreadCount: assistantUnreadCount,
+    diagnosisDetected: assistantContext?.diagnosis?.detected === true,
+    needsAttention: assistantNeedsAttention,
+  });
+  const assistantLauncherSummary = assistantAttentionState.summary;
+  const assistantLauncherAriaLabel = assistantAttentionState.labels.length
+    ? `Open assistant. ${assistantAttentionState.labels.join(", ")}.`
+    : "Open assistant.";
+  const assistantPanelContent = (
+    <section
+      className={`chat-panel assistant-panel-window ${
+        isAssistantExpanded ? "assistant-panel-window-expanded" : "assistant-panel-window-docked"
+      }`}
+      role={isAssistantExpanded ? "dialog" : "complementary"}
+      aria-modal={isAssistantExpanded ? "true" : undefined}
+      aria-label="Assistant"
+    >
+      <div className="chat-header assistant-window-header">
+        <div className="assistant-window-heading">
+          <span className="section-title">Assistant</span>
+          <div className="assistant-window-title-row">
+            <h2>Context Chat</h2>
+            {chatLoading ? <span className="count-pill">Analyzing</span> : null}
+          </div>
+          <div
+            className={`assistant-window-context-row ${
+              assistantServiceLabel ? "" : "assistant-window-context-row-muted"
+            }`}
+          >
+            {assistantServiceLabel ? <strong>{assistantServiceLabel}</strong> : <span>No service selected</span>}
+            {assistantServiceLabel ? (
+              <span className={`status-badge ${statusClassName(selectedServiceStatus)}`} title={selectedServiceStatus}>
+                {formatStatusLabel(selectedServiceStatus)}
+              </span>
+            ) : null}
+            {assistantHostOwnershipLabel ? (
+              <span className="status-badge status-info">{assistantHostOwnershipLabel}</span>
+            ) : null}
+          </div>
+        </div>
+        <div className="assistant-window-controls">
+          {isAssistantExpanded ? (
+            <button type="button" className="mini-button assistant-window-control" onClick={handleDockAssistant}>
+              Dock
+            </button>
+          ) : (
+            <button type="button" className="mini-button assistant-window-control" onClick={handleOpenAssistantExpanded}>
+              Pop out
+            </button>
+          )}
+          <button type="button" className="mini-button assistant-window-control" onClick={handleMinimizeAssistant}>
+            Minimize
+          </button>
+          {isAssistantExpanded ? (
+            <button
+              type="button"
+              className="mini-button assistant-window-control assistant-window-control-close"
+              onClick={handleCloseAssistant}
+            >
+              Close
+            </button>
+          ) : null}
+        </div>
+      </div>
+      {isAssistantExpanded ? <div className="assistant-window-safety">{assistantSafetyText}</div> : null}
+      {chatError ? <div className="banner error-banner">Chat analysis failed: {chatError}</div> : null}
+      <div className="messages">
+        <div className="assistant-context-card">
+          <div className="assistant-context-header">
+            <span className="detail-label">Grounded Context</span>
+            <span
+              className={`status-badge signal-freshness-badge signal-freshness-badge-${
+                assistantContext.inventory.freshness.bucket || "unknown"
+              }`}
+              title={assistantContext.inventory.freshness.provenanceText || assistantContext.inventory.freshness.label}
+            >
+              {assistantContext.inventory.freshness.label}
+            </span>
+          </div>
+          <div className="assistant-context-summary">{assistantContext.openingMessage}</div>
+          {assistantContext.panelFacts.length ? (
+            <div className="assistant-context-facts">
+              {assistantContext.panelFacts.map((fact) => (
+                <span
+                  key={fact.key}
+                  className={`assistant-context-fact assistant-context-fact-${fact.tone || "neutral"}`}
+                  title={`${fact.label}: ${fact.value}`}
+                >
+                  <strong>{fact.label}:</strong> {fact.value}
+                </span>
+              ))}
+            </div>
+          ) : null}
+          <div className="assistant-context-section">
+            <div className="assistant-context-section-copy">
+              <span className="detail-label">Quick prompts</span>
+              <span className="assistant-context-section-note">Grounded in the selected service and current operator context.</span>
+            </div>
+            <div className="assistant-prompt-chips">
+              {assistantContext.quickPrompts.map((prompt) => (
+                <button
+                  key={prompt}
+                  type="button"
+                  className="assistant-prompt-chip"
+                  onClick={() => handleQuickPrompt(prompt)}
+                  disabled={chatLoading || !selectedService}
+                >
+                  {prompt}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="assistant-context-section">
+            <div className="assistant-context-section-copy">
+              <span className="detail-label">Operator plans</span>
+              <span className="assistant-context-section-note">Read-only planning only. Restart and approval paths stay inside Service Actions.</span>
+            </div>
+            <div className="assistant-plan-chip-row">
+              {ASSISTANT_PLAN_CHIPS.map((chip) => (
+                <button
+                  key={chip.id}
+                  type="button"
+                  className={`assistant-prompt-chip assistant-plan-chip ${
+                    activeAssistantPlanChipId === chip.id ? "assistant-plan-chip-active" : ""
+                  }`}
+                  onClick={() => handleAssistantPlanChip(chip.id)}
+                >
+                  {chip.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="assistant-context-section">
+            <div className="assistant-context-section-copy">
+              <span className="detail-label">Safe lookups</span>
+              <span className="assistant-context-section-note">Windows repo/docs, Fedora safe API surfaces, and registered cross-host docs only.</span>
+            </div>
+            <div className="assistant-lookup-chip-row">
+              {ASSISTANT_LOOKUP_CHIPS.map((chip) => (
+                <button
+                  key={chip.id}
+                  type="button"
+                  className="assistant-prompt-chip assistant-lookup-chip"
+                  onClick={() => handleAssistantLookupAction(chip.id)}
+                  disabled={chatLoading}
+                >
+                  {chip.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          {assistantSelection ? (
+            <div className="inline-note assistant-selection-note">
+              Selected target: {assistantSelection.title || assistantSelection.relativePath || assistantSelection.serviceName || "None"}
+            </div>
+          ) : null}
+        </div>
+        <AssistantPlanCards cards={assistantPlanCards} onRunAction={runAssistantPlanAction} />
+        {!chatMessages.length && !chatLoading ? (
+          <div className="message system">Ask one of the quick prompts or type a question grounded in the selected service.</div>
+        ) : null}
+        {chatMessages.map((m) => (
+          <div key={m.id} className={`message ${m.role}`}>
+            {m.content ? <div>{m.content}</div> : null}
+            {m.summary ? (
+              <div className="chat-plan">
+                <div className="chat-summary">
+                  <span className="detail-label">Summary</span>
+                  <div>{m.summary}</div>
+                </div>
+                {m.lookup ? (
+                  <div>
+                    <span className="detail-label">Lookup Results</span>
+                    <AssistantLookupResults
+                      lookup={m.lookup}
+                      selection={assistantSelection}
+                      onSelectItem={handleSelectAssistantItem}
+                      onPreviewItem={handlePreviewAssistantItem}
+                      onExplainItem={handleExplainAssistantItem}
+                    />
+                  </div>
+                ) : null}
+                <div>
+                  <span className="detail-label">Suggestions</span>
+                  <ul className="suggestion-list">
+                    {(Array.isArray(m.suggestions) ? m.suggestions : []).map((suggestion) => (
+                      <li key={suggestion}>{suggestion}</li>
+                    ))}
+                  </ul>
+                </div>
+                {m.proposedAction ? (
+                  <div className="suggested-action-card">
+                    <span className="detail-label">
+                      Suggested Action: Restart {m.proposedAction.serviceName || "selected service"}
+                    </span>
+                    <div>{m.proposedAction.reason || "No reason provided."}</div>
+                    <button
+                      type="button"
+                      className="secondary-button assistant-window-action-link"
+                      onClick={() => applySuggestedAction(m.proposedAction)}
+                    >
+                      Open in Actions Panel
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        ))}
+        {chatLoading ? <div className="message system">Analyzing current context...</div> : null}
+      </div>
+
+      <form className="composer" onSubmit={handleChatSubmit}>
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Ask about diagnosis, logs, host ownership, reports, or safe file lookup..."
+        />
+        <button disabled={chatLoading}>{chatLoading ? "Analyzing..." : "Send"}</button>
+      </form>
+    </section>
+  );
+
   return (
-    <div className="app-shell">
+    <>
+      <div className={`app-shell ${isAssistantDocked ? "app-shell-assistant-docked" : "app-shell-assistant-collapsed"}`}>
       <aside className="sidebar">
         <div className="sidebar-header">
           <span className="eyebrow">Garage Admin V2</span>
@@ -5213,155 +5587,42 @@ export default function App() {
         </div>
       </main>
 
-      <aside className="chat-panel">
-        <div className="chat-header">
-          <div>
-            <span className="section-title">Assistant</span>
-            <h2>Context Chat</h2>
-          </div>
-          {chatLoading ? <span className="count-pill">Analyzing</span> : null}
+        {isAssistantDocked ? assistantPanelContent : null}
+      </div>
+      {isAssistantExpanded ? (
+        <div className="assistant-overlay" aria-hidden="false">
+          <div className="assistant-overlay-backdrop" />
+          <div className="assistant-overlay-panel">{assistantPanelContent}</div>
         </div>
-        {chatError ? <div className="banner error-banner">Chat analysis failed: {chatError}</div> : null}
-        <div className="messages">
-          <div className="assistant-context-card">
-            <div className="assistant-context-header">
-              <span className="detail-label">Grounded Context</span>
-              <span
-                className={`status-badge signal-freshness-badge signal-freshness-badge-${
-                  assistantContext.inventory.freshness.bucket || "unknown"
-                }`}
-                title={assistantContext.inventory.freshness.provenanceText || assistantContext.inventory.freshness.label}
-              >
-                {assistantContext.inventory.freshness.label}
+      ) : null}
+      {!isAssistantDocked && !isAssistantExpanded ? (
+        <button
+          type="button"
+          className={`assistant-launcher ${assistantNeedsAttention ? "assistant-launcher-attention" : ""}`}
+          onClick={handleOpenAssistantExpanded}
+          aria-label={assistantLauncherAriaLabel}
+        >
+          <div className="assistant-launcher-header">
+            <div className="assistant-launcher-title">
+              <span className="section-title">Assistant</span>
+              <strong>AI Assistant</strong>
+            </div>
+            {assistantAttentionState.count ? <span className="count-pill">{assistantAttentionState.count}</span> : null}
+          </div>
+          <div className="assistant-launcher-context">
+            {assistantServiceLabel ? `${assistantServiceLabel} ready` : "Grounded operator context ready when needed."}
+          </div>
+          <div className="assistant-launcher-badges">
+            {assistantAttentionState.labels.map((label) => (
+              <span key={label} className="status-badge status-info">
+                {label}
               </span>
-            </div>
-            <div className="assistant-context-summary">{assistantContext.openingMessage}</div>
-            {assistantContext.panelFacts.length ? (
-              <div className="assistant-context-facts">
-                {assistantContext.panelFacts.map((fact) => (
-                  <span
-                    key={fact.key}
-                    className={`assistant-context-fact assistant-context-fact-${fact.tone || "neutral"}`}
-                    title={`${fact.label}: ${fact.value}`}
-                  >
-                    <strong>{fact.label}:</strong> {fact.value}
-                  </span>
-                ))}
-              </div>
-            ) : null}
-            <div className="assistant-prompt-chips">
-              {assistantContext.quickPrompts.map((prompt) => (
-                <button
-                  key={prompt}
-                  type="button"
-                  className="assistant-prompt-chip"
-                  onClick={() => handleQuickPrompt(prompt)}
-                  disabled={chatLoading || !selectedService}
-                >
-                  {prompt}
-                </button>
-              ))}
-            </div>
-            <div className="assistant-plan-chip-copy">
-              <span className="detail-label">Operator Plans</span>
-            </div>
-            <div className="assistant-plan-chip-row">
-              {ASSISTANT_PLAN_CHIPS.map((chip) => (
-                <button
-                  key={chip.id}
-                  type="button"
-                  className={`assistant-prompt-chip assistant-plan-chip ${
-                    activeAssistantPlanChipId === chip.id ? "assistant-plan-chip-active" : ""
-                  }`}
-                  onClick={() => handleAssistantPlanChip(chip.id)}
-                >
-                  {chip.label}
-                </button>
-              ))}
-            </div>
-            <div className="assistant-lookup-chip-row">
-              {ASSISTANT_LOOKUP_CHIPS.map((chip) => (
-                <button
-                  key={chip.id}
-                  type="button"
-                  className="assistant-prompt-chip assistant-lookup-chip"
-                  onClick={() => handleAssistantLookupAction(chip.id)}
-                  disabled={chatLoading}
-                >
-                  {chip.label}
-                </button>
-              ))}
-            </div>
-            {assistantSelection ? (
-              <div className="inline-note assistant-selection-note">
-                Selected target: {assistantSelection.title || assistantSelection.relativePath || assistantSelection.serviceName || "None"}
-              </div>
-            ) : null}
+            ))}
+            {!assistantAttentionState.labels.length ? <span className="status-badge status-info">Open assistant</span> : null}
           </div>
-          <AssistantPlanCards cards={assistantPlanCards} onRunAction={runAssistantPlanAction} />
-          {!chatMessages.length && !chatLoading ? (
-            <div className="message system">Ask one of the quick prompts or type a question grounded in the selected service.</div>
-          ) : null}
-          {chatMessages.map((m) => (
-            <div key={m.id} className={`message ${m.role}`}>
-              {m.content ? <div>{m.content}</div> : null}
-              {m.summary ? (
-                <div className="chat-plan">
-                  <div className="chat-summary">
-                    <span className="detail-label">Summary</span>
-                    <div>{m.summary}</div>
-                  </div>
-                  {m.lookup ? (
-                    <div>
-                      <span className="detail-label">Lookup Results</span>
-                      <AssistantLookupResults
-                        lookup={m.lookup}
-                        selection={assistantSelection}
-                        onSelectItem={handleSelectAssistantItem}
-                        onPreviewItem={handlePreviewAssistantItem}
-                        onExplainItem={handleExplainAssistantItem}
-                      />
-                    </div>
-                  ) : null}
-                  <div>
-                    <span className="detail-label">Suggestions</span>
-                    <ul className="suggestion-list">
-                      {(Array.isArray(m.suggestions) ? m.suggestions : []).map((suggestion) => (
-                        <li key={suggestion}>{suggestion}</li>
-                      ))}
-                    </ul>
-                  </div>
-                  {m.proposedAction ? (
-                    <div className="suggested-action-card">
-                      <span className="detail-label">
-                        Suggested Action: Restart {m.proposedAction.serviceName || "selected service"}
-                      </span>
-                      <div>{m.proposedAction.reason || "No reason provided."}</div>
-                      <button
-                        type="button"
-                        className="action-button"
-                        onClick={() => applySuggestedAction(m.proposedAction)}
-                      >
-                        Use in Actions Panel
-                      </button>
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-          ))}
-          {chatLoading ? <div className="message system">Analyzing current context...</div> : null}
-        </div>
-
-        <form className="composer" onSubmit={handleChatSubmit}>
-          <input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask about diagnosis, logs, host ownership, reports, or safe file lookup..."
-          />
-          <button disabled={chatLoading}>{chatLoading ? "Analyzing..." : "Send"}</button>
-        </form>
-      </aside>
-    </div>
+          <div className="assistant-launcher-summary">{assistantLauncherSummary}</div>
+        </button>
+      ) : null}
+    </>
   );
 }

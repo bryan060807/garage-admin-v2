@@ -1583,6 +1583,8 @@ assert.ok(assistantRestartPlan);
 assert.equal(assistantRestartPlan.risk.level, "caution");
 assert.ok(assistantRestartPlan.approvalSteps.length >= 1);
 assert.ok(assistantRestartPlan.blockedNote.includes("cannot restart"));
+assert.ok(assistantRestartPlan.blockedNote.includes("cannot restart or approve"));
+assert.ok(assistantRestartPlan.approvalSteps.some((step) => step.includes("Service Actions")));
 results.push({
   name: "assistant restart plan stays approval-routed",
   assistantRestartPlanRisk: assistantRestartPlan.risk.level,

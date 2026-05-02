@@ -3,35 +3,35 @@ import { formatActionTypeLabel, getActionRiskProfile } from "./actionRisk.js";
 export const ASSISTANT_PLAN_CHIPS = Object.freeze([
   {
     id: "build-diagnosis-plan",
-    label: "Build diagnosis plan",
+    label: "Diagnosis plan",
   },
   {
     id: "build-log-inspection-plan",
-    label: "Build log inspection plan",
+    label: "Log review",
   },
   {
     id: "build-health-verification-plan",
-    label: "Build health verification plan",
+    label: "Health check",
   },
   {
     id: "build-restart-request-plan",
-    label: "Build restart request plan",
+    label: "Restart request",
   },
   {
     id: "build-dependency-trace-plan",
-    label: "Build dependency trace plan",
+    label: "Dependency trace",
   },
   {
     id: "build-stale-inventory-plan",
-    label: "Build stale inventory plan",
+    label: "Stale inventory",
   },
   {
     id: "build-report-evidence-plan",
-    label: "Build report evidence plan",
+    label: "Report evidence",
   },
   {
     id: "build-file-evidence-plan",
-    label: "Build file evidence plan",
+    label: "File evidence",
   },
 ]);
 
@@ -538,7 +538,7 @@ function buildDiagnosisPlan({
     nextRecommendedAction: targetService
       ? {
           id: "query-logs",
-          label: "Query Logs",
+          label: "Run safe log query",
           serviceName:
             readText(diagnosis.relatedServiceId) && cleanText(diagnosis.relatedServiceId) !== cleanText(targetService.id)
               ? diagnosis.relatedServiceId
@@ -615,7 +615,7 @@ function buildLogInspectionPlan({
     nextRecommendedAction: targetService
       ? {
           id: "query-logs",
-          label: "Query Logs",
+          label: "Run safe log query",
           serviceName: readText(logLookupItem?.serviceName, targetService.id),
         }
       : null,
@@ -753,7 +753,9 @@ function buildRestartRequestPlan({
     if (approval.gateStatus === "unsupported") {
       approvalSteps.push("Do not submit a restart request from chat because restart support is unavailable for this service.");
     } else {
-      approvalSteps.push("Open Service Actions and prepare the restart request there; chat cannot execute it directly.");
+      approvalSteps.push(
+        "Open the existing Service Actions approval workflow and prepare the restart request there; chat cannot approve or execute it directly.",
+      );
 
       if (readText(restartApprovalContext?.gate?.acknowledgementLabel, approval.gate?.acknowledgementLabel)) {
         approvalSteps.push(
@@ -786,7 +788,8 @@ function buildRestartRequestPlan({
     approvalSteps,
     expectedImpact: readText(risk.expectedImpact),
     rollbackNote: readText(risk.rollbackNote),
-    blockedNote: "Chat cannot restart anything directly. Any restart request must stay inside the existing Actions and approval workflow.",
+    blockedNote:
+      "Chat cannot restart or approve anything directly. If restart is supported, prepare it through the existing Service Actions approval workflow.",
     supportingEvidence: supportingEvidence.slice(0, 5),
     nextRecommendedAction: targetService
       ? {
@@ -796,8 +799,8 @@ function buildRestartRequestPlan({
               : "open-service-actions",
           label:
             restartApprovalContext?.gate?.blockedUntilRefresh === true || approval.gateStatus === "blocked-until-refresh"
-              ? "Use Refresh Inventory"
-              : "Open Service Actions",
+              ? "Refresh inventory first"
+              : "Open Service Actions workflow",
           serviceName: targetService.id,
         }
       : null,
@@ -846,7 +849,7 @@ function buildStaleInventoryPlan({
     supportingEvidence: [buildDependencyEvidence(assistantContext)].filter(Boolean),
     nextRecommendedAction: {
       id: "refresh-inventory",
-      label: "Use Refresh Inventory",
+      label: "Refresh inventory first",
     },
   };
 }
@@ -879,7 +882,7 @@ function buildRefreshInventoryPlan({ assistantContext }) {
     supportingEvidence: [],
     nextRecommendedAction: {
       id: "refresh-inventory",
-      label: "Use Refresh Inventory",
+      label: "Refresh inventory",
     },
   };
 }
@@ -968,13 +971,13 @@ function buildDependencyTracePlan({
       targetService && readText(diagnosis.relatedServiceId, focusDependency?.serviceId)
         ? {
             id: "query-logs",
-            label: "Query Logs",
+            label: "Run safe log query",
             serviceName: readText(diagnosis.relatedServiceId, focusDependency?.serviceId),
           }
         : targetService
           ? {
               id: "refresh-inventory",
-              label: "Use Refresh Inventory",
+              label: "Refresh inventory first",
             }
           : null,
   };
@@ -1042,7 +1045,7 @@ function buildAuditSummaryPlan({
     nextRecommendedAction: targetService
       ? {
           id: "open-service-actions",
-          label: "Open Service Actions",
+          label: "Open Service Actions workflow",
           serviceName: targetService.id,
         }
       : null,
@@ -1098,12 +1101,12 @@ function buildReportEvidencePlan({
     nextRecommendedAction: reportItem
       ? {
           id: "open-report-preview",
-          label: "Open report preview",
+          label: "Open safe report preview",
           item: reportItem,
         }
       : {
           id: "find-report",
-          label: "Find report",
+          label: "Find supporting report",
           query: readText(targetService?.name, assistantContext?.diagnosis?.relatedServiceName, assistantContext?.service?.name),
         },
   };
@@ -1168,7 +1171,7 @@ function buildFileEvidencePlan({
         }
       : {
           id: "search-files",
-          label: "Search files",
+          label: "Search safe files",
           query: readText(targetService?.name, assistantContext?.diagnosis?.relatedServiceName, assistantContext?.service?.name),
         },
   };
