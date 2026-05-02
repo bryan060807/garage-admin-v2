@@ -1,4 +1,5 @@
 const express = require("express");
+const path = require("path");
 const assistantLookup = require("../lib/assistantLookup");
 
 const router = express.Router();
@@ -78,6 +79,40 @@ function pushSuggestion(suggestions, value) {
 function pluralize(count, singular, plural = `${singular}s`) {
   return `${count} ${count === 1 ? singular : plural}`;
 }
+
+const SENSITIVE_FILE_BASENAME_PATTERN =
+  /(^\.env(?:\.|$))|((^|[-_.])(token|secret|credential|credentials|password|passwd|private|api[-_.]?key)([-_.]|$))|(^id_(rsa|dsa|ecdsa|ed25519)(?:\.|$))/i;
+const SENSITIVE_FILE_EXTENSION_PATTERN = /\.(pem|key|crt|cer|p12|pfx|kdbx|asc)$/i;
+const DATABASE_DUMP_PATTERN = /(^|[-_.])(dump|backup|snapshot)([-_.]|$)/i;
+const LOG_FILE_PATTERN = /\.log$/i;
+const RESTART_REQUEST_PATTERN = /\b(restart|bounce|recycle)\b/i;
+const EXECUTE_OR_APPROVE_PATTERN = /\b(approve|approval|execute|run it|do it now|force|bypass|override|skip)\b/i;
+const DESTRUCTIVE_ACTION_PATTERN =
+  /\b(delete|remove|destroy|wipe|drop|truncate|write|edit|modify|overwrite|clear logs|prune|disable|allowlist|allow list)\b/i;
+const SAFE_NEXT_STEP_PATTERN = /\b(safest?|best)\b.*\b(next step|next move)\b|\bwhat should i do next\b/i;
+const DIAGNOSIS_PATTERN =
+  /\b(what(?:'s| is)\s+wrong|what\s+broke|broken|broke|failing|failure|diagnosis|issue|why\b.*\b(fail|broken|down)|what\s+is\s+broken)\b/i;
+const HOST_OWNERSHIP_PATTERN = /\b(host|owns?|ownership|fedora|windows|control[- ]plane|runtime)\b/i;
+const STALE_PATTERN =
+  /\b(stale|freshness|aging|age unknown|unknown timestamp|inventory age)\b|\bis this stale\b|\bwhat is stale or unknown\b/i;
+const DEPENDENCY_PATTERN = /\b(dependency|dependencies|upstream|related service|dependency path)\b/i;
+const AUDIT_PATTERN = /\b(audit|history|recent actions?|last actions?)\b/i;
+const SUMMARY_PATTERN = /\b(summarize|summary|overview|summarise)\b/i;
+const HELP_PATTERN = /\b(help|what can you do|what should i ask|options)\b/i;
+const LOG_REFERENCE_PATTERN = /\blogs?\b/i;
+const LOG_QUERY_VERB_PATTERN = /\b(pull|get|fetch|show|tail|query|grab)\b/i;
+const LOG_GUIDANCE_PATTERN = /\b(what|which|review|inspect|explain)\b.*\blogs?\b|\blog checks?\b/i;
+const FILE_SEARCH_PATTERN = /\b(search|find|locate|look for)\b.*\bfiles?\b/i;
+const FILE_PREVIEW_PATTERN = /\b(read|open|show|preview|display|inspect|cat)\b/i;
+const REPORT_LOOKUP_PATTERN = /\b(runbook|report|docs?|documentation)\b/i;
+
+const LOOKUP_TYPE_TO_INTENT = Object.freeze({
+  reports: "find_report",
+  "search-files": "search_files",
+  "read-file": "preview_file",
+  "logs-query": "query_logs",
+  "explain-report": "find_report",
+});
 
 function truncateLogs(logs) {
   const lines = String(logs || "")
@@ -172,52 +207,189 @@ function buildLegacyResponse({ message, serviceName, incident, logs, recentAudit
   };
 }
 
+function normalizeMessageText(message) {
+  return cleanText(message)
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+function extractTrailingArgument(message, expression) {
+  const match = String(message || "").match(expression);
+  return cleanText(match?.[1]).replace(/^['"`]+|['"`]+$/g, "");
+}
+
+function getPathBaseName(candidate) {
+  const normalized = cleanText(candidate).replace(/^['"`]+|['"`]+$/g, "");
+
+  if (!normalized) {
+    return "";
+  }
+
+  return path.basename(normalized).toLowerCase();
+}
+
+function getSensitiveReadReason(candidate) {
+  const baseName = getPathBaseName(candidate);
+
+  if (!baseName) {
+    return "";
+  }
+
+  if (SENSITIVE_FILE_BASENAME_PATTERN.test(baseName)) {
+    return "This read was blocked because it looks like an env/secret file.";
+  }
+
+  if (SENSITIVE_FILE_EXTENSION_PATTERN.test(baseName)) {
+    return "This read was blocked because it looks like a key, certificate, token, or credential file.";
+  }
+
+  if (DATABASE_DUMP_PATTERN.test(baseName)) {
+    return "This read was blocked because it looks like a database dump or backup artifact.";
+  }
+
+  if (LOG_FILE_PATTERN.test(baseName)) {
+    return "This read was blocked because raw private log files are not exposed through file preview.";
+  }
+
+  return "";
+}
+
+function extractReportQuery(message) {
+  const normalized = normalizeMessageText(message);
+
+  if (!REPORT_LOOKUP_PATTERN.test(normalized)) {
+    return "";
+  }
+
+  const explicitQuery = extractTrailingArgument(
+    message,
+    /\b(?:find|search|lookup|locate|show|open|explain)\s+(?:the\s+)?(?:runbook|report|docs?|documentation)(?:\s+(?:for|about|on)\s+(.+))?\s*$/i,
+  );
+
+  if (explicitQuery) {
+    return explicitQuery;
+  }
+
+  if (normalized.includes("runbook")) {
+    return "runbook";
+  }
+
+  if (normalized.includes("report")) {
+    return "report";
+  }
+
+  return "documentation";
+}
+
+function extractFileSearchQuery(message, fallbackServiceName = "") {
+  const explicitQuery = extractTrailingArgument(
+    message,
+    /\b(?:search|find|locate|look for)\s+(?:safe\s+)?files?(?:\s+(?:for|named|called|matching))?\s+(.+)$/i,
+  );
+
+  if (explicitQuery) {
+    return explicitQuery;
+  }
+
+  if (FILE_SEARCH_PATTERN.test(normalizeMessageText(message))) {
+    return cleanText(fallbackServiceName);
+  }
+
+  return "";
+}
+
+function extractFilePreviewTarget(message) {
+  const target = extractTrailingArgument(
+    message,
+    /\b(?:read|open|show|preview|display|inspect|cat)\s+(?:the\s+)?(?:safe\s+)?(?:file\s+)?(.+)$/i,
+  )
+    .replace(/\b(?:please|for me|now)\b$/i, "")
+    .trim();
+
+  if (!target) {
+    return "";
+  }
+
+  if (REPORT_LOOKUP_PATTERN.test(target) || (LOG_REFERENCE_PATTERN.test(target) && !/[./\\]/.test(target))) {
+    return "";
+  }
+
+  return target;
+}
+
+function extractLogLookupRequest(message, serviceName = "") {
+  const normalized = normalizeMessageText(message);
+
+  if (!LOG_REFERENCE_PATTERN.test(normalized) || !LOG_QUERY_VERB_PATTERN.test(normalized)) {
+    return null;
+  }
+
+  const filter =
+    extractTrailingArgument(message, /\blogs?\s*(?:for|matching|about|with)\s+(.+)$/i) ||
+    extractTrailingArgument(message, /\blogs?\s*[:\-]\s*(.+)$/i);
+
+  return {
+    type: "logs-query",
+    service: cleanText(serviceName),
+    filter,
+    lines: 40,
+  };
+}
+
 function detectIntent(message) {
-  const text = cleanText(message).toLowerCase();
+  const text = normalizeMessageText(message);
 
   if (!text) {
-    return "default";
+    return "general_help";
   }
 
-  if ((text.includes("safe") || text.includes("safest")) && text.includes("next")) {
-    return "safe-next-step";
+  if (SAFE_NEXT_STEP_PATTERN.test(text)) {
+    return "safest_next_step";
   }
 
-  if (text.includes("restart")) {
-    return "restart-plan";
+  if (AUDIT_PATTERN.test(text)) {
+    return "summarize_audit";
   }
 
-  if (text.includes("dependency")) {
-    return "dependency-path";
+  if (HOST_OWNERSHIP_PATTERN.test(text)) {
+    return "explain_host_ownership";
   }
 
-  if (text.includes("log")) {
-    return "logs";
+  if (STALE_PATTERN.test(text)) {
+    return "explain_stale_inventory";
   }
 
-  if (text.includes("stale") || text.includes("unknown") || text.includes("freshness")) {
-    return "stale";
+  if (DEPENDENCY_PATTERN.test(text)) {
+    return "trace_dependency";
   }
 
-  if (
-    text.includes("host") ||
-    text.includes("owns") ||
-    text.includes("ownership") ||
-    text.includes("fedora") ||
-    text.includes("windows")
-  ) {
-    return "host-ownership";
+  if (LOG_REFERENCE_PATTERN.test(text) && LOG_GUIDANCE_PATTERN.test(text)) {
+    return "inspect_logs";
   }
 
-  if (text.includes("summarize") || text.includes("summary")) {
-    return "summarize-service";
+  if (DIAGNOSIS_PATTERN.test(text)) {
+    return "explain_diagnosis";
   }
 
-  if (text.includes("diagnosis") || text.includes("failure") || text.includes("error") || text.includes("explain")) {
-    return "diagnosis";
+  if (SUMMARY_PATTERN.test(text)) {
+    return "summarize_selected_service";
   }
 
-  return "default";
+  if (HELP_PATTERN.test(text)) {
+    return "general_help";
+  }
+
+  return "general_help";
+}
+
+function isUnsupportedOrRiskyActionRequest(message) {
+  const normalized = normalizeMessageText(message);
+
+  if (RESTART_REQUEST_PATTERN.test(normalized) && !EXECUTE_OR_APPROVE_PATTERN.test(normalized)) {
+    return false;
+  }
+
+  return EXECUTE_OR_APPROVE_PATTERN.test(normalized) || DESTRUCTIVE_ACTION_PATTERN.test(normalized);
 }
 
 function normalizeLookupRequest(value) {
@@ -256,13 +428,20 @@ function extractLookupMessageArgument(message, prefix) {
     return "";
   }
 
-  return cleanText(text.slice(normalizedPrefix.length).replace(/^[:\s-]+/, ""));
+  return cleanText(text.slice(normalizedPrefix.length).replace(/^[:\s-]+/, "")).replace(
+    /^(for|about|on|named|called|matching)\s+/i,
+    "",
+  );
 }
 
 function inferLookupRequestFromMessage(message, assistantContext) {
   const context = toObject(assistantContext);
   const serviceName = getServiceName(context);
-  const normalizedMessage = cleanText(message).toLowerCase();
+  const normalizedMessage = normalizeMessageText(message);
+  const reportQuery = extractReportQuery(message);
+  const fileSearchQuery = extractFileSearchQuery(message, serviceName);
+  const filePreviewTarget = extractFilePreviewTarget(message);
+  const logLookupRequest = extractLogLookupRequest(message, serviceName);
 
   if (normalizedMessage.startsWith("find report")) {
     return {
@@ -304,7 +483,99 @@ function inferLookupRequestFromMessage(message, assistantContext) {
     };
   }
 
+  if (filePreviewTarget) {
+    return {
+      type: "read-file",
+      path: filePreviewTarget,
+      maxBytes: 12 * 1024,
+    };
+  }
+
+  if (reportQuery) {
+    return {
+      type: "reports",
+      query: reportQuery,
+    };
+  }
+
+  if (fileSearchQuery) {
+    return {
+      type: "search-files",
+      query: fileSearchQuery,
+      searchContent: true,
+      limit: 12,
+    };
+  }
+
+  if (logLookupRequest) {
+    return logLookupRequest;
+  }
+
   return null;
+}
+
+function classifyAssistantIntent({ message, assistantContext, lookupRequest } = {}) {
+  const normalizedLookupRequest = normalizeLookupRequest(lookupRequest);
+  const explicitPreviewTarget =
+    normalizedLookupRequest?.type === "read-file"
+      ? readText(normalizedLookupRequest.path, normalizedLookupRequest.reportId)
+      : "";
+  const explicitSensitiveReadReason = getSensitiveReadReason(explicitPreviewTarget);
+
+  if (explicitSensitiveReadReason) {
+    return {
+      intent: "blocked_sensitive_file",
+      blockedReason: explicitSensitiveReadReason,
+      blockedTarget: explicitPreviewTarget,
+      lookupRequest: normalizedLookupRequest,
+    };
+  }
+
+  if (normalizedLookupRequest) {
+    return {
+      intent: LOOKUP_TYPE_TO_INTENT[normalizedLookupRequest.type] || "general_help",
+      lookupRequest: normalizedLookupRequest,
+    };
+  }
+
+  const inferredLookupRequest = inferLookupRequestFromMessage(message, assistantContext);
+  const inferredPreviewTarget = inferredLookupRequest?.type === "read-file" ? inferredLookupRequest.path : "";
+  const inferredSensitiveReadReason = getSensitiveReadReason(inferredPreviewTarget);
+
+  if (inferredSensitiveReadReason) {
+    return {
+      intent: "blocked_sensitive_file",
+      blockedReason: inferredSensitiveReadReason,
+      blockedTarget: inferredPreviewTarget,
+      lookupRequest: inferredLookupRequest,
+    };
+  }
+
+  if (inferredLookupRequest) {
+    return {
+      intent: LOOKUP_TYPE_TO_INTENT[inferredLookupRequest.type] || "general_help",
+      lookupRequest: inferredLookupRequest,
+    };
+  }
+
+  if (RESTART_REQUEST_PATTERN.test(normalizeMessageText(message))) {
+    return {
+      intent: "prepare_restart_plan",
+      lookupRequest: null,
+    };
+  }
+
+  if (isUnsupportedOrRiskyActionRequest(message)) {
+    return {
+      intent: "unsupported_or_risky_action",
+      lookupRequest: null,
+    };
+  }
+
+  return {
+    intent: detectIntent(message),
+    lookupRequest: null,
+  };
 }
 
 function buildLookupPayload(type, result, extra = {}) {
@@ -364,7 +635,7 @@ function buildLookupSelectionSummary(item) {
   return `${title}. ${buildLookupOriginSentence(item)}`;
 }
 
-async function buildLookupResponse(message, assistantContext, lookupRequest) {
+async function buildLookupResponse(message, assistantContext, lookupRequest, lookupApi = assistantLookup) {
   const normalizedRequest =
     normalizeLookupRequest(lookupRequest) || inferLookupRequestFromMessage(message, assistantContext);
 
@@ -373,7 +644,7 @@ async function buildLookupResponse(message, assistantContext, lookupRequest) {
   }
 
   if (normalizedRequest.type === "reports") {
-    const result = await assistantLookup.listReports({
+    const result = await lookupApi.listReports({
       query: normalizedRequest.query,
     });
 
@@ -413,7 +684,7 @@ async function buildLookupResponse(message, assistantContext, lookupRequest) {
   }
 
   if (normalizedRequest.type === "search-files") {
-    const result = await assistantLookup.searchFiles({
+    const result = await lookupApi.searchFiles({
       query: normalizedRequest.query,
       rootLabels: normalizedRequest.rootLabels,
       searchContent: normalizedRequest.searchContent,
@@ -454,7 +725,7 @@ async function buildLookupResponse(message, assistantContext, lookupRequest) {
   }
 
   if (normalizedRequest.type === "read-file") {
-    const result = await assistantLookup.readFilePreview({
+    const result = await lookupApi.readFilePreview({
       path: normalizedRequest.path,
       reportId: normalizedRequest.reportId,
       maxBytes: normalizedRequest.maxBytes,
@@ -509,7 +780,7 @@ async function buildLookupResponse(message, assistantContext, lookupRequest) {
       };
     }
 
-    const result = await assistantLookup.queryLogs({
+    const result = await lookupApi.queryLogs({
       service: serviceName,
       lines: normalizedRequest.lines,
       filter: normalizedRequest.filter,
@@ -558,9 +829,9 @@ async function buildLookupResponse(message, assistantContext, lookupRequest) {
     let reportResult = null;
 
     if (normalizedRequest.reportId) {
-      reportResult = await assistantLookup.getReportDetail(normalizedRequest.reportId);
+      reportResult = await lookupApi.getReportDetail(normalizedRequest.reportId);
     } else {
-      reportResult = await assistantLookup.listReports({
+      reportResult = await lookupApi.listReports({
         query: normalizedRequest.query,
       });
     }
@@ -589,7 +860,7 @@ async function buildLookupResponse(message, assistantContext, lookupRequest) {
     }
 
     const previewResult = reportItem.reportId
-      ? await assistantLookup.readFilePreview({
+      ? await lookupApi.readFilePreview({
           reportId: reportItem.reportId,
           maxBytes: 8 * 1024,
         })
@@ -1022,6 +1293,7 @@ function buildRestartPlanResponse(context) {
   const suggestions = [];
   let proposedAction = null;
   const parts = [
+    "Chat cannot execute or approve restarts directly.",
     "Restart planning should stay behind the existing approval workflow and start with read-only diagnostics.",
     formatReadOnlyLogSupport(context),
     formatReadOnlyHealthSupport(context),
@@ -1116,37 +1388,119 @@ function buildStalenessResponse(context) {
   };
 }
 
-function buildDefaultResponse(context) {
+function buildAuditSummaryResponse(context) {
   const suggestions = [];
-  const summary = [
-    `${getServiceLabel(context)} is selected on ${formatHostLabel(context?.service?.host)}.`,
-    formatInventorySentence(context),
-    formatDependencySentence(context),
-    formatDiagnosisSentence(context),
-    formatLatestActionSentence(context),
-  ].join(" ");
+  const latestActionSentence = formatLatestActionSentence(context);
+  const serviceLabel = getServiceLabel(context);
 
-  buildReadOnlySuggestions(context, suggestions);
-  pushSuggestion(suggestions, "Ask for diagnosis, logs, dependency path, stale context, or restart planning when you need a more specific answer.");
+  buildReadOnlySuggestions(context, suggestions, { includeRelated: false });
+  pushSuggestion(suggestions, "Use the History panel for the full audit trail, approvals, and execution status.");
 
   return {
-    summary,
+    summary:
+      `${serviceLabel} audit context is summarized from the current chat-safe view only. ${latestActionSentence} ` +
+      "For the complete action history, use the Recent Audit / History panel in the existing UI.",
     suggestions,
     proposedAction: null,
   };
 }
 
-async function buildGroundedResponse(message, assistantContext, lookupRequest) {
-  const lookupResponse = await buildLookupResponse(message, assistantContext, lookupRequest);
+function buildUnsupportedOrRiskyActionResponse(context) {
+  const suggestions = [];
+  const serviceLabel = getServiceLabel(context);
 
-  if (lookupResponse) {
-    return lookupResponse;
+  if (getServiceName(context)) {
+    buildReadOnlySuggestions(context, suggestions);
   }
 
+  pushSuggestion(suggestions, "Ask for a restart plan, diagnosis, log review, freshness check, dependency trace, or host ownership summary instead.");
+  pushSuggestion(suggestions, "Use Service Actions for approval-gated restart preparation. Chat stays read-only.");
+
+  return {
+    summary:
+      `That request is unsupported from chat. I cannot approve actions, execute changes, write files, delete data, modify allowlists, or bypass freshness and approval gates for ${serviceLabel}. ` +
+      "I can still help with read-only diagnosis, safe lookup, and approval-routed planning.",
+    suggestions,
+    proposedAction: null,
+  };
+}
+
+function buildSensitiveFileBlockedResponse(context, blockedReason, blockedTarget = "") {
+  const suggestions = [];
+  const targetLabel = cleanText(blockedTarget) ? ` for ${cleanText(blockedTarget)}` : "";
+
+  if (getServiceName(context)) {
+    buildReadOnlySuggestions(context, suggestions, { includeRelated: false });
+  }
+
+  pushSuggestion(suggestions, "Search safe files such as README, runbooks, or allowlisted docs instead of opening secret-bearing files.");
+  pushSuggestion(suggestions, "Use Query Logs or report lookup for read-only evidence when you need operational context.");
+
+  return {
+    summary: `${blockedReason || "This file preview was blocked by policy."} Chat will not expose sensitive file content${targetLabel}.`,
+    suggestions,
+    proposedAction: null,
+  };
+}
+
+function buildGeneralHelpResponse(context) {
+  const suggestions = [];
+  const serviceLabel = getServiceLabel(context);
+
+  buildReadOnlySuggestions(context, suggestions);
+  pushSuggestion(suggestions, "Ask `what's wrong?`, `pull logs`, `find runbook`, `search files for README`, `what host owns this?`, `is this stale?`, or `restart it`.");
+  pushSuggestion(suggestions, "Ask for `summarize this service` when you want the full selected-service overview.");
+
+  return {
+    summary:
+      `I can give intent-specific help for ${serviceLabel}: diagnosis, safest next step, log guidance or log query, runbook lookup, safe file search/preview, host ownership, stale inventory, dependency trace, audit summary, and restart planning. ` +
+      "Ask directly for the one you want and I will keep the answer grounded in the current read-only context.",
+    suggestions,
+    proposedAction: null,
+  };
+}
+
+async function buildGroundedResponse(message, assistantContext, lookupRequest, options = {}) {
   const context = toObject(assistantContext);
+  const classification = classifyAssistantIntent({
+    message,
+    assistantContext: context,
+    lookupRequest,
+  });
+
+  if (classification.intent === "blocked_sensitive_file") {
+    return {
+      intent: classification.intent,
+      ...buildSensitiveFileBlockedResponse(context, classification.blockedReason, classification.blockedTarget),
+    };
+  }
+
+  if (classification.intent === "unsupported_or_risky_action") {
+    return {
+      intent: classification.intent,
+      ...buildUnsupportedOrRiskyActionResponse(context),
+    };
+  }
+
+  if (classification.lookupRequest) {
+    const lookupResponse = await buildLookupResponse(
+      message,
+      context,
+      classification.lookupRequest,
+      options.lookupApi || assistantLookup,
+    );
+
+    if (lookupResponse) {
+      return {
+        intent: classification.intent,
+        ...lookupResponse,
+      };
+    }
+  }
 
   if (!getServiceName(context)) {
     return {
+      intent: classification.intent,
       summary:
         "No service is selected. Select a service first so the assistant can ground diagnosis, dependencies, freshness, logs, and approval state in the current UI context.",
       suggestions: ["Select a service, then ask about diagnosis, next steps, dependencies, logs, or host ownership."],
@@ -1154,41 +1508,73 @@ async function buildGroundedResponse(message, assistantContext, lookupRequest) {
     };
   }
 
-  const intent = detectIntent(message);
-
-  if (intent === "host-ownership") {
-    return buildHostOwnershipResponse(context);
+  if (classification.intent === "explain_host_ownership") {
+    return {
+      intent: classification.intent,
+      ...buildHostOwnershipResponse(context),
+    };
   }
 
-  if (intent === "diagnosis") {
-    return buildDiagnosisResponse(context);
+  if (classification.intent === "explain_diagnosis") {
+    return {
+      intent: classification.intent,
+      ...buildDiagnosisResponse(context),
+    };
   }
 
-  if (intent === "safe-next-step") {
-    return buildSafeNextStepResponse(context);
+  if (classification.intent === "safest_next_step") {
+    return {
+      intent: classification.intent,
+      ...buildSafeNextStepResponse(context),
+    };
   }
 
-  if (intent === "summarize-service") {
-    return buildServiceSummaryResponse(context);
+  if (classification.intent === "summarize_selected_service") {
+    return {
+      intent: classification.intent,
+      ...buildServiceSummaryResponse(context),
+    };
   }
 
-  if (intent === "dependency-path") {
-    return buildDependencyPathResponse(context);
+  if (classification.intent === "trace_dependency") {
+    return {
+      intent: classification.intent,
+      ...buildDependencyPathResponse(context),
+    };
   }
 
-  if (intent === "logs") {
-    return buildLogsResponse(context);
+  if (classification.intent === "inspect_logs") {
+    return {
+      intent: classification.intent,
+      ...buildLogsResponse(context),
+    };
   }
 
-  if (intent === "restart-plan") {
-    return buildRestartPlanResponse(context);
+  if (classification.intent === "prepare_restart_plan") {
+    return {
+      intent: classification.intent,
+      ...buildRestartPlanResponse(context),
+    };
   }
 
-  if (intent === "stale") {
-    return buildStalenessResponse(context);
+  if (classification.intent === "explain_stale_inventory") {
+    return {
+      intent: classification.intent,
+      ...buildStalenessResponse(context),
+    };
   }
 
-  return buildDefaultResponse(context);
+  if (classification.intent === "summarize_audit") {
+    return {
+      intent: classification.intent,
+      ...buildAuditSummaryResponse(context),
+    };
+  }
+
+  return {
+    intent: classification.intent,
+    ...buildGeneralHelpResponse(context),
+  };
 }
 
 router.post(
@@ -1205,6 +1591,7 @@ router.post(
 
       return res.json({
         ok: true,
+        intent: response.intent,
         summary: response.summary,
         suggestions: response.suggestions,
         proposedAction: response.proposedAction || null,
@@ -1229,5 +1616,14 @@ router.post(
     });
   }),
 );
+
+router.__testables = {
+  buildGroundedResponse,
+  buildLookupResponse,
+  classifyAssistantIntent,
+  detectIntent,
+  inferLookupRequestFromMessage,
+  normalizeLookupRequest,
+};
 
 module.exports = router;

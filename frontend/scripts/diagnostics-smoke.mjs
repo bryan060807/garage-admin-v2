@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 
 import { buildActionApprovalContext, evaluateApprovalFreshnessGate } from "../src/actionApproval.js";
 import { buildAssistantContext, buildAssistantRequestPayload } from "../src/assistantContext.js";
@@ -19,6 +20,10 @@ import {
   describeInventoryFreshness,
 } from "../src/dependencyHealth.js";
 import { extractServiceDiagnosis, extractServiceLogEvents } from "../src/diagnostics.js";
+
+const require = createRequire(import.meta.url);
+const chatRouter = require("../../backend/src/routes/chat.js");
+const { buildGroundedResponse, classifyAssistantIntent } = chatRouter.__testables;
 
 const FRESHNESS_NOW = Date.parse("2026-05-01T12:00:00Z");
 
@@ -1789,6 +1794,225 @@ assert.ok(tonedRestartPlan.blockedNote.includes("cannot restart or approve"));
 results.push({
   name: "assistant plan blocked note keeps safety wording under tone formatting",
   tonedRestartPlanBlockedNote: tonedRestartPlan.blockedNote,
+});
+
+const groundedLookupStub = {
+  async listReports({ query = "" } = {}) {
+    return {
+      ok: true,
+      count: 1,
+      query,
+      allowlistedRoots: [],
+      items: [
+        {
+          id: "report:garage-admin-runbook",
+          kind: "report",
+          title: "Garage Admin V2 Project Runbook",
+          reportId: "garage-admin-v2-project-runbook",
+          snippet: "Primary Garage Admin V2 repo runbook.",
+          sourceLabel: "Registry metadata",
+          hostContext: "windows",
+        },
+      ],
+    };
+  },
+  async searchFiles({ query = "" } = {}) {
+    return {
+      ok: true,
+      count: 1,
+      query,
+      allowlistedRoots: [],
+      resultCapReached: false,
+      scanCapReached: false,
+      items: [
+        {
+          id: "file:readme",
+          kind: "file",
+          title: "README.md",
+          relativePath: "README.md",
+          path: "C:/Users/bryan/aibry/projects/garage-admin-v2/README.md",
+          snippet: "Matched filename/path: README.md",
+          sourceLabel: "Allowlisted filesystem",
+          hostContext: "windows",
+        },
+      ],
+    };
+  },
+  async readFilePreview({ path = "" } = {}) {
+    return {
+      ok: true,
+      count: 1,
+      allowlistedRoots: [],
+      items: [
+        {
+          id: "preview:readme",
+          kind: "file-preview",
+          title: path || "README.md",
+          relativePath: path || "README.md",
+          path: path || "README.md",
+          snippet: "Safe preview available.",
+          sourceLabel: "Allowlisted filesystem",
+          hostContext: "windows",
+          truncated: false,
+        },
+      ],
+    };
+  },
+  async queryLogs({ service = "", filter = "" } = {}) {
+    return {
+      ok: true,
+      count: 1,
+      service,
+      filter,
+      allowlistedRoots: [],
+      items: [
+        {
+          id: `log-preview:${service || "service"}`,
+          kind: "log-preview",
+          title: `${service || "service"} logs`,
+          serviceName: service,
+          hostContext: "windows",
+          snippet: "2026-05-01T11:59:40Z Error: example log line",
+          truncated: false,
+        },
+      ],
+    };
+  },
+  async getReportDetail(reportId = "") {
+    return {
+      ok: true,
+      item: {
+        id: reportId || "garage-admin-v2-project-runbook",
+        kind: "report",
+        title: "Garage Admin V2 Project Runbook",
+        reportId: reportId || "garage-admin-v2-project-runbook",
+        snippet: "Primary Garage Admin V2 repo runbook.",
+        sourceLabel: "Registry metadata",
+        hostContext: "windows",
+      },
+      allowlistedRoots: [],
+    };
+  },
+};
+
+const groundedServiceContext = assistantContextCases[0].context;
+const groundedWhatIsWrong = await buildGroundedResponse("what's wrong?", groundedServiceContext, null, {
+  lookupApi: groundedLookupStub,
+});
+const groundedPullLogs = await buildGroundedResponse("pull logs", groundedServiceContext, null, {
+  lookupApi: groundedLookupStub,
+});
+const groundedFindRunbook = await buildGroundedResponse("find runbook", groundedServiceContext, null, {
+  lookupApi: groundedLookupStub,
+});
+const groundedSearchFiles = await buildGroundedResponse("search files for README", groundedServiceContext, null, {
+  lookupApi: groundedLookupStub,
+});
+const groundedReadEnv = await buildGroundedResponse("read .env", groundedServiceContext, null, {
+  lookupApi: groundedLookupStub,
+});
+const groundedRestart = await buildGroundedResponse("restart it", groundedServiceContext, null, {
+  lookupApi: groundedLookupStub,
+});
+const groundedHostOwnership = await buildGroundedResponse("what host owns this?", groundedServiceContext, null, {
+  lookupApi: groundedLookupStub,
+});
+const groundedStale = await buildGroundedResponse("is this stale?", groundedServiceContext, null, {
+  lookupApi: groundedLookupStub,
+});
+const groundedSummary = await buildGroundedResponse("summarize this service", groundedServiceContext, null, {
+  lookupApi: groundedLookupStub,
+});
+const groundedUnsafe = await buildGroundedResponse("delete the config", groundedServiceContext, null, {
+  lookupApi: groundedLookupStub,
+});
+
+assert.equal(classifyAssistantIntent({ message: "what's wrong?", assistantContext: groundedServiceContext }).intent, "explain_diagnosis");
+assert.equal(groundedWhatIsWrong.intent, "explain_diagnosis");
+assert.ok(
+  groundedWhatIsWrong.summary.includes("does not have an active diagnosis") ||
+    groundedWhatIsWrong.summary.includes("Diagnosis for"),
+);
+assert.notEqual(groundedWhatIsWrong.summary, groundedSummary.summary);
+results.push({
+  name: "grounded diagnosis prompt does not fall back to generic service summary",
+  diagnosisIntent: groundedWhatIsWrong.intent,
+});
+
+assert.equal(groundedPullLogs.intent, "query_logs");
+assert.equal(groundedPullLogs.lookup?.type, "logs-query");
+assert.ok(/log preview|log preview for|read-only/i.test(groundedPullLogs.summary));
+results.push({
+  name: "grounded pull logs prompt returns log-oriented response",
+  pullLogsIntent: groundedPullLogs.intent,
+});
+
+assert.equal(groundedFindRunbook.intent, "find_report");
+assert.equal(groundedFindRunbook.lookup?.type, "reports");
+assert.ok(/runbook|report/i.test(groundedFindRunbook.summary));
+results.push({
+  name: "grounded find runbook prompt returns report lookup response",
+  runbookIntent: groundedFindRunbook.intent,
+});
+
+assert.equal(groundedSearchFiles.intent, "search_files");
+assert.equal(groundedSearchFiles.lookup?.type, "search-files");
+assert.ok(/matching files|previews/i.test(groundedSearchFiles.summary));
+results.push({
+  name: "grounded search files prompt returns file search response",
+  searchFilesIntent: groundedSearchFiles.intent,
+});
+
+assert.equal(groundedReadEnv.intent, "blocked_sensitive_file");
+assert.ok(/blocked/i.test(groundedReadEnv.summary));
+assert.ok(/env\/secret/i.test(groundedReadEnv.summary));
+results.push({
+  name: "grounded env read prompt stays blocked",
+  blockedIntent: groundedReadEnv.intent,
+});
+
+assert.equal(groundedRestart.intent, "prepare_restart_plan");
+assert.ok(/cannot execute or approve restarts directly/i.test(groundedRestart.summary));
+assert.ok(/approval workflow|Actions panel/i.test(groundedRestart.summary));
+results.push({
+  name: "grounded restart prompt stays approval-routed",
+  restartIntent: groundedRestart.intent,
+});
+
+assert.equal(groundedHostOwnership.intent, "explain_host_ownership");
+assert.ok(/Windows owns|Fedora/i.test(groundedHostOwnership.summary));
+results.push({
+  name: "grounded host ownership prompt explains Windows and Fedora split",
+  hostIntent: groundedHostOwnership.intent,
+});
+
+assert.equal(groundedStale.intent, "explain_stale_inventory");
+assert.ok(/Inventory|freshness|stale/i.test(groundedStale.summary));
+results.push({
+  name: "grounded stale prompt explains freshness context",
+  staleIntent: groundedStale.intent,
+});
+
+assert.equal(groundedSummary.intent, "summarize_selected_service");
+assert.ok(/runs on|Status:/i.test(groundedSummary.summary));
+results.push({
+  name: "grounded summarize service prompt returns selected-service summary",
+  summaryIntent: groundedSummary.intent,
+});
+
+assert.equal(groundedUnsafe.intent, "unsupported_or_risky_action");
+assert.ok(/unsupported from chat|read-only/i.test(groundedUnsafe.summary));
+results.push({
+  name: "grounded destructive request is blocked and redirected",
+  unsafeIntent: groundedUnsafe.intent,
+});
+
+assert.notEqual(groundedPullLogs.summary, groundedSummary.summary);
+assert.notEqual(groundedHostOwnership.summary, groundedSummary.summary);
+results.push({
+  name: "same selected service produces different summaries for different prompts",
+  diagnosisVsSummaryDifferent: groundedWhatIsWrong.summary !== groundedSummary.summary,
+  logsVsSummaryDifferent: groundedPullLogs.summary !== groundedSummary.summary,
 });
 
 console.log(JSON.stringify({ ok: true, cases: results }, null, 2));
