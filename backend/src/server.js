@@ -11,6 +11,7 @@ const bridgeRoutes = require("./routes/bridge");
 const serviceRoutes = require("./routes/services");
 const actionRoutes = require("./routes/actions");
 const chatRoutes = require("./routes/chat");
+const assistantRoutes = require("./routes/assistant");
 
 const app = express();
 const frontendDistPath = path.resolve(__dirname, "../../frontend/dist");
@@ -42,6 +43,7 @@ app.use("/api/bridge", bridgeRoutes);
 app.use("/api/services", serviceRoutes);
 app.use("/api/actions", actionRoutes);
 app.use("/api/chat", chatRoutes);
+app.use("/api/assistant", assistantRoutes);
 
 app.use(express.static(frontendDistPath));
 
