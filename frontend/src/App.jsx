@@ -1,4 +1,5 @@
 import { Component, useEffect, useRef, useState } from "react";
+import { formatActionTypeLabel, getActionRiskProfile, shouldShowActionApprovalPreview } from "./actionRisk";
 import { buildDependencyHealthRollup, describeInventoryFreshness } from "./dependencyHealth";
 import { extractServiceDiagnosis } from "./diagnostics";
 
@@ -1492,11 +1493,11 @@ const ACTION_LABELS = {
 };
 
 function actionLabel(actionType) {
-  return ACTION_LABELS[actionType] || actionType || "Action";
+  return ACTION_LABELS[actionType] || formatActionTypeLabel(actionType);
 }
 
-function requiresApproval(actionType) {
-  return actionType === "restart-service";
+function requiresApproval(actionType, metadata = null) {
+  return getActionRiskProfile(actionType, metadata).requiresApproval;
 }
 
 function getApiErrorMessage(data, fallback) {
@@ -1669,11 +1670,13 @@ function formatActionResultClipboard(actionResult) {
 
   const action = actionResult.action || actionResult;
   const result = getActionResult(actionResult);
+  const riskProfile = getActionRiskProfile(action.actionType || result.actionType, actionResult);
   const lines = [
     "Garage Admin V2 action result",
     `Action: ${actionLabel(action.actionType || result.actionType)}`,
     `Target: ${action.target || result.target || "unknown"}`,
     `Status: ${action.status || result.status || "unknown"}`,
+    `Risk: ${riskProfile.label}`,
   ];
   const createdAt = action.createdAt || result.executedAt;
   const summary = getActionResultSummary(actionResult);
@@ -1691,7 +1694,7 @@ function formatActionResultClipboard(actionResult) {
 }
 
 function canApproveAction(entry) {
-  return entry?.status === "pending" && requiresApproval(entry.actionType);
+  return entry?.status === "pending" && requiresApproval(entry.actionType, entry);
 }
 
 function canExecuteAction(entry) {
@@ -1730,32 +1733,124 @@ function canRestartService(service) {
   return false;
 }
 
-const ACTION_RISK_PROFILES = {
-  "fetch-logs": {
-    label: "Safe",
-    riskLevel: "safe",
-    detail: "Read-only log retrieval.",
-  },
-  "health-check": {
-    label: "Safe",
-    riskLevel: "safe",
-    detail: "Read-only health probe.",
-  },
-  "restart-service": {
-    label: "Caution",
-    riskLevel: "caution",
-    detail: "Requires approval and changes runtime state.",
-  },
-};
-
-function getActionRiskProfile(actionType) {
-  return (
-    ACTION_RISK_PROFILES[actionType] || {
-      label: "Unknown",
-      riskLevel: "unknown",
-      detail: "Review before running.",
-    }
+function resolveActionTargetName(actionRecord) {
+  return readServiceString(
+    actionRecord?.input?.serviceName,
+    actionRecord?.serviceName,
+    actionRecord?.action?.input?.serviceName,
+    actionRecord?.action?.serviceName,
+    actionRecord?.target,
+    actionRecord?.action?.target,
   );
+}
+
+function findServiceForAction(actionRecord, services) {
+  const targetName = resolveActionTargetName(actionRecord);
+
+  if (!targetName || !Array.isArray(services)) {
+    return null;
+  }
+
+  return services.find((service) => service?.name === targetName) || null;
+}
+
+function getActionHostLabel(actionRecord, serviceRecord) {
+  return readServiceString(
+    actionRecord?.host,
+    actionRecord?.input?.host,
+    actionRecord?.action?.input?.host,
+    serviceRecord?.host,
+    "Unknown",
+  );
+}
+
+function getActionRuntimeLabel(actionRecord, serviceRecord) {
+  return readServiceString(
+    getServiceManager(serviceRecord),
+    actionRecord?.manager,
+    actionRecord?.input?.manager,
+    actionRecord?.action?.input?.manager,
+    getServiceProcessName(serviceRecord),
+    "Unknown runtime",
+  );
+}
+
+function getActionRiskContext(actionType, actionRecord, serviceRecord) {
+  const capability = actionCapability(serviceRecord, actionType);
+  const supported =
+    typeof capability?.supported === "boolean"
+      ? capability.supported
+      : actionType === "restart-service"
+        ? canRestartService(serviceRecord)
+        : undefined;
+
+  return {
+    service: serviceRecord,
+    supported,
+    host: getActionHostLabel(actionRecord, serviceRecord),
+    manager: getServiceManager(serviceRecord),
+  };
+}
+
+function buildActionApprovalDetails(actionType, actionRecord, serviceRecord, options = {}) {
+  const targetName = resolveActionTargetName(actionRecord);
+  const riskProfile =
+    options.riskProfile || getActionRiskProfile(actionType, actionRecord, getActionRiskContext(actionType, actionRecord, serviceRecord));
+
+  return compactDetailItems([
+    {
+      label: "Action",
+      value: actionLabel(actionType),
+    },
+    {
+      label: "Target service",
+      value: serviceRecord?.displayName || targetName || "Unknown service",
+    },
+    {
+      label: "Host",
+      value: getActionHostLabel(actionRecord, serviceRecord),
+    },
+    {
+      label: "Runtime / manager",
+      value: getActionRuntimeLabel(actionRecord, serviceRecord),
+    },
+    {
+      label: "Risk level",
+      value: riskProfile.label,
+    },
+    {
+      label: "Requested by",
+      value: readServiceString(actionRecord?.requestedBy, actionRecord?.action?.requestedBy, "Not set"),
+    },
+    {
+      label: "Approved by",
+      value: readServiceString(actionRecord?.approvedBy, actionRecord?.action?.approvedBy, "Not set"),
+    },
+    {
+      label: "Requires approval",
+      value: riskProfile.requiresApproval ? "Yes" : "No",
+    },
+    {
+      label: "Expected impact",
+      value: riskProfile.expectedImpact,
+    },
+    {
+      label: "Rollback note",
+      value: riskProfile.rollbackNote,
+    },
+    options.approvalNote
+      ? {
+          label: "Approval note",
+          value: options.approvalNote,
+        }
+      : null,
+    options.lifecycleText
+      ? {
+          label: "Lifecycle state",
+          value: options.lifecycleText,
+        }
+      : null,
+  ]);
 }
 
 function getHealthStatusSummary(healthResult) {
@@ -1787,29 +1882,9 @@ function getHealthStatusSummary(healthResult) {
   return `${healthResult.ok ? "OK" : "Attention"}${healthResult.status ? ` · HTTP ${healthResult.status}` : ""}`;
 }
 
-function getRestartImpactText(service, restartSupported) {
-  if (!service || !restartSupported) {
-    return "Restart is not supported for this service from this executor.";
-  }
-
-  if (String(service.host || "").toLowerCase() === "fedora") {
-    return "Brief interruption of Fedora control-plane service. Logs remain available through supported paths if restart succeeds.";
-  }
-
-  if (String(getServiceManager(service) || "").toLowerCase() === "pm2") {
-    return "Brief interruption of the Windows-hosted PM2 process. Verification should confirm process/health after restart.";
-  }
-
-  return "Brief interruption of the selected service while the runtime restarts.";
-}
-
-function getRestartRecoveryText() {
-  return "No files or configuration are changed by this action. If restart fails, fetch logs and run health check before retrying.";
-}
-
 function getRestartConfirmationText(restartSupported) {
   return restartSupported
-    ? "Operator approval is required before execution; verify the target service and expected interruption first."
+    ? "Operator approval is required before execution; verify the target service, host, impact, and rollback note first."
     : "Restart is blocked for this service from the current executor.";
 }
 
@@ -2601,6 +2676,23 @@ export default function App() {
   const selectedServiceRelationshipSections = buildServiceRelationshipSections(selectedServiceRecord, serviceItems);
   const latestVisibleAction = visibleAudit[0] || null;
   const latestResultSource = restartResult || latestVisibleAction;
+  const latestActionType = readServiceString(
+    restartResult?.action?.actionType,
+    restartResult?.actionType,
+    restartResult?.result?.actionType,
+    latestVisibleAction?.actionType,
+    latestVisibleAction?.result?.actionType,
+  );
+  const latestActionServiceRecord = latestResultSource
+    ? findServiceForAction(latestResultSource, serviceItems) || selectedServiceRecord
+    : selectedServiceRecord;
+  const latestActionRiskProfile = latestActionType
+    ? getActionRiskProfile(
+        latestActionType,
+        latestResultSource,
+        getActionRiskContext(latestActionType, latestResultSource, latestActionServiceRecord),
+      )
+    : null;
   const latestResultClipboardText = formatActionResultClipboard(latestResultSource);
   const latestActionText = restartResult
     ? getActionResultSummary(restartResult)
@@ -2655,56 +2747,41 @@ export default function App() {
         .join(" · ")
     : "Select a service to inspect logs and actions.";
   const signalAlertCount = logSignals.alertCount + (hasHealthOutput && !healthOutput.ok ? 1 : 0) + (latestActionStatus === "failed" ? 1 : 0);
-  const restartApprovalDetails = selectedServiceRecord
-    ? compactDetailItems([
-        {
-          label: "Action",
-          value: actionLabel("restart-service"),
+  const restartDraftAction = selectedServiceRecord
+    ? {
+        actionType: "restart-service",
+        target: selectedServiceRecord.name,
+        requestedBy: restartForm.requestedBy.trim() || latestRestartAction?.requestedBy || "",
+        approvedBy: restartForm.approvedBy.trim() || latestRestartAction?.approvedBy || "",
+        input: {
+          serviceName: selectedServiceRecord.name,
+          host: selectedServiceHost,
+          requiresApproval: requiresApproval("restart-service", latestRestartAction || selectedServiceRestartCapability),
+          risk: readServiceString(
+            latestRestartAction?.input?.risk,
+            latestRestartAction?.input?.riskLevel,
+            selectedServiceRestartCapability?.risk,
+            selectedServiceRestartCapability?.riskLevel,
+          ),
         },
-        {
-          label: "Target",
-          value: selectedServiceRecord.displayName,
-        },
-        {
-          label: "Host / runtime",
-          value: [selectedServiceHost, selectedServiceManager || selectedServiceProcessName || "unknown runtime"]
-            .filter(Boolean)
-            .join(" · "),
-        },
-        {
-          label: "Risk level",
-          value: getActionRiskProfile("restart-service").label,
-        },
-        {
-          label: "Requested by",
-          value: restartForm.requestedBy.trim() || latestRestartAction?.requestedBy || "Not set",
-        },
-        {
-          label: "Approved by",
-          value: restartForm.approvedBy.trim() || latestRestartAction?.approvedBy || "Not set",
-        },
-        {
-          label: "Approval required",
-          value: requiresApproval("restart-service") ? "Yes" : "No",
-        },
-        {
-          label: "Expected impact",
-          value: getRestartImpactText(selectedServiceRecord, selectedServiceCanRestart),
-        },
-        {
-          label: "Rollback / recovery",
-          value: getRestartRecoveryText(),
-        },
-        {
-          label: "Confirmation",
-          value: getRestartConfirmationText(selectedServiceCanRestart),
-        },
-        {
-          label: "Lifecycle state",
-          value: getRestartLifecycleText(latestRestartAction, selectedServiceCanRestart, restartForm.requestedBy.trim()),
-        },
-      ])
-    : [];
+      }
+    : null;
+  const restartRiskProfile =
+    selectedServiceRecord && restartDraftAction
+      ? getActionRiskProfile(
+          "restart-service",
+          restartDraftAction,
+          getActionRiskContext("restart-service", restartDraftAction, selectedServiceRecord),
+        )
+      : null;
+  const restartApprovalDetails =
+    selectedServiceRecord && restartDraftAction && restartRiskProfile
+      ? buildActionApprovalDetails("restart-service", restartDraftAction, selectedServiceRecord, {
+          riskProfile: restartRiskProfile,
+          approvalNote: getRestartConfirmationText(selectedServiceCanRestart),
+          lifecycleText: getRestartLifecycleText(latestRestartAction, selectedServiceCanRestart, restartForm.requestedBy.trim()),
+        })
+      : [];
   const signalDisclosureDefaultOpen = Boolean(selectedServiceRecord);
   const signalDetailItems = selectedServiceRecord
     ? compactDetailItems([
@@ -3913,17 +3990,21 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className={`approval-details-card ${selectedServiceCanRestart ? "" : "approval-details-card-unsupported"}`}>
+                <div
+                  className={`approval-details-card approval-details-card-risk-${
+                    restartRiskProfile?.riskLevel || "unknown"
+                  } ${selectedServiceCanRestart ? "" : "approval-details-card-unsupported"}`}
+                >
                   <div className="approval-details-header">
                     <div>
                       <span className="section-title">Approval</span>
                       <h3>Restart Approval Details</h3>
                     </div>
                     <span
-                      className={`status-badge status-risk-${getActionRiskProfile("restart-service").riskLevel}`}
-                      title={getActionRiskProfile("restart-service").detail}
+                      className={`status-badge status-risk-${restartRiskProfile?.riskLevel || "unknown"}`}
+                      title={restartRiskProfile?.detail || "Review before running."}
                     >
-                      {getActionRiskProfile("restart-service").label}
+                      {restartRiskProfile?.label || "Unknown"}
                     </span>
                   </div>
                   <div className="approval-details-grid">
@@ -3978,10 +4059,10 @@ export default function App() {
                         <span className="detail-label">Restart</span>
                         <div className="inline-badges">
                           <span
-                            className={`status-badge status-risk-${getActionRiskProfile("restart-service").riskLevel} action-risk-badge`}
-                            title={getActionRiskProfile("restart-service").detail}
+                            className={`status-badge status-risk-${restartRiskProfile?.riskLevel || "unknown"} action-risk-badge`}
+                            title={restartRiskProfile?.detail || "Review before running."}
                           >
-                            {getActionRiskProfile("restart-service").label}
+                            {restartRiskProfile?.label || "Unknown"}
                           </span>
                         </div>
                         <div className="inline-status-row">
@@ -4018,6 +4099,14 @@ export default function App() {
                         {formatStatusLabel(latestActionStatus)}
                       </span>
                       <strong>{actionLabel(restartResult.action?.actionType || restartResult.result?.actionType)}</strong>
+                      {latestActionRiskProfile ? (
+                        <span
+                          className={`status-badge status-risk-${latestActionRiskProfile.riskLevel}`}
+                          title={latestActionRiskProfile.detail}
+                        >
+                          {latestActionRiskProfile.label}
+                        </span>
+                      ) : null}
                       <button
                         type="button"
                         className="mini-button compact-copy-button"
@@ -4131,6 +4220,21 @@ export default function App() {
                     entry.input && typeof entry.input === "object" && "reason" in entry.input
                       ? entry.input.reason
                       : "";
+                  const auditServiceRecord = findServiceForAction(entry, serviceItems);
+                  const auditRiskProfile = getActionRiskProfile(
+                    entry.actionType,
+                    entry,
+                    getActionRiskContext(entry.actionType, entry, auditServiceRecord),
+                  );
+                  const auditReviewDetails = shouldShowActionApprovalPreview(
+                    entry.actionType,
+                    entry,
+                    getActionRiskContext(entry.actionType, entry, auditServiceRecord),
+                  )
+                    ? buildActionApprovalDetails(entry.actionType, entry, auditServiceRecord, {
+                        riskProfile: auditRiskProfile,
+                      })
+                    : [];
                   const unsupportedRestart = getUnsupportedRestartMessage(entry.result);
                   const verification = getVerification(entry.result);
                   const formattedInput = formatAuditValue(entry.input) || "None";
@@ -4149,7 +4253,15 @@ export default function App() {
                     >
                       <div className="audit-header">
                         <div className="audit-title-group">
-                          <strong>{actionLabel(entry.actionType)}</strong>
+                          <div className="audit-title-row">
+                            <strong className="audit-action-title">{actionLabel(entry.actionType)}</strong>
+                            <span
+                              className={`status-badge status-risk-${auditRiskProfile.riskLevel}`}
+                              title={auditRiskProfile.detail}
+                            >
+                              {auditRiskProfile.label}
+                            </span>
+                          </div>
                           <span title={entry.target}>{entry.target}</span>
                         </div>
                         <span className={`status-badge status-${entry.status}`} title={entry.status}>
@@ -4163,6 +4275,7 @@ export default function App() {
                         <span title={`Approved: ${entry.approvedBy || "None"}`}>
                           Approved: {entry.approvedBy || "None"}
                         </span>
+                        <span title={`Risk: ${auditRiskProfile.label}`}>Risk: {auditRiskProfile.label}</span>
                         <span title={formatCreatedAt(entry.createdAt)}>{formatCreatedAt(entry.createdAt)}</span>
                       </div>
 
@@ -4205,6 +4318,23 @@ export default function App() {
                             <div>
                               <span className="detail-label">Reason</span>
                               <div>{reason}</div>
+                            </div>
+                          ) : null}
+                          {auditReviewDetails.length ? (
+                            <div className="audit-approval-preview">
+                              <div className="detail-header">
+                                <span className="detail-label">Action review</span>
+                              </div>
+                              <div className="approval-details-grid audit-approval-grid">
+                                {auditReviewDetails.map((item) => (
+                                  <div key={`${entry.id}-${item.label}`} className="detail-item">
+                                    <span className="detail-label">{item.label}</span>
+                                    <span className="detail-value approval-detail-value" title={item.value}>
+                                      {item.value}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
                             </div>
                           ) : null}
                           <div>

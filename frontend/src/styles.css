@@ -113,7 +113,7 @@ button {
 .workspace-title p,
 .panel-heading p,
 .list-item span,
-.audit-title-group span,
+.audit-title-group > span,
 .audit-meta,
 .empty-state,
 .archive-note {
@@ -1381,6 +1381,24 @@ button {
   background: rgba(255, 255, 255, 0.025);
 }
 
+.approval-details-card-risk-safe {
+  border-color: rgba(76, 182, 105, 0.22);
+}
+
+.approval-details-card-risk-caution {
+  border-color: rgba(246, 180, 64, 0.24);
+  background: rgba(246, 180, 64, 0.04);
+}
+
+.approval-details-card-risk-dangerous {
+  border-color: rgba(184, 65, 65, 0.24);
+  background: rgba(184, 65, 65, 0.04);
+}
+
+.approval-details-card-risk-unknown {
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
 .approval-details-card-unsupported {
   border-style: dashed;
   background: rgba(255, 255, 255, 0.02);
@@ -1652,7 +1670,18 @@ button {
   min-width: 0;
 }
 
-.audit-title-group span {
+.audit-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.audit-action-title {
+  display: inline;
+}
+
+.audit-title-group > span {
   display: block;
   min-width: 0;
   overflow: hidden;
@@ -1662,7 +1691,7 @@ button {
 
 .audit-meta {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
   gap: 6px;
   margin-top: 7px;
   font-size: 0.8rem;
@@ -1680,6 +1709,18 @@ button {
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 10px;
+}
+
+.audit-approval-preview {
+  margin-top: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.audit-approval-grid {
+  margin-top: 8px;
 }
 
 .audit-summary {
@@ -1937,6 +1978,7 @@ button {
 .compact-result-header {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
 }
 

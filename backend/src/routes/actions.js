@@ -11,6 +11,7 @@ const router = express.Router();
 const ACTION_DEFINITIONS = {
   "fetch-logs": {
     label: "Fetch logs",
+    risk: "low",
     requiresApproval: false,
     requiresService: true,
     execute: async ({ serviceName }) => {
@@ -27,6 +28,7 @@ const ACTION_DEFINITIONS = {
   },
   "health-check": {
     label: "Health check",
+    risk: "low",
     requiresApproval: false,
     requiresService: true,
     execute: async ({ serviceName }) => {
@@ -42,6 +44,7 @@ const ACTION_DEFINITIONS = {
   },
   "restart-service": {
     label: "Restart service",
+    risk: "medium",
     requiresApproval: true,
     requiresService: true,
     execute: async ({ serviceName, host }) => {
@@ -252,12 +255,13 @@ async function createAction(input) {
     status,
     requestedBy,
     approvedBy: definition.requiresApproval ? null : requestedBy,
-    input: {
-      serviceName: serviceName || null,
-      host,
-      reason: input.reason ? String(input.reason).trim() : "",
-      requiresApproval: definition.requiresApproval,
-    },
+      input: {
+        serviceName: serviceName || null,
+        host,
+        reason: input.reason ? String(input.reason).trim() : "",
+        risk: definition.risk || null,
+        requiresApproval: definition.requiresApproval,
+      },
     result: {},
   });
 }

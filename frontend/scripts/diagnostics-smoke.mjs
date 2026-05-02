@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 
+import { getActionRiskProfile, shouldShowActionApprovalPreview } from "../src/actionRisk.js";
 import {
   buildDependencyHealthRollup,
   classifyDependencyFreshness,
@@ -576,6 +577,103 @@ for (const testCase of cases) {
     detected: diagnosis.detected,
     primaryIssue: diagnosis.primaryIssue || "none",
     logEventCount: events.length,
+  });
+}
+
+const actionRiskCases = [
+  {
+    name: "fetch-logs maps to safe",
+    profile: getActionRiskProfile("fetch-logs"),
+    verify(profile) {
+      assert.equal(profile.riskLevel, "safe");
+      assert.equal(profile.label, "Safe");
+      assert.equal(profile.requiresApproval, false);
+    },
+  },
+  {
+    name: "health-check maps to safe",
+    profile: getActionRiskProfile("health-check"),
+    verify(profile) {
+      assert.equal(profile.riskLevel, "safe");
+      assert.equal(profile.label, "Safe");
+      assert.equal(profile.requiresApproval, false);
+    },
+  },
+  {
+    name: "restart-service maps to caution and requires approval",
+    profile: getActionRiskProfile("restart-service", { input: { requiresApproval: true, risk: "medium" } }),
+    verify(profile) {
+      assert.equal(profile.riskLevel, "caution");
+      assert.equal(profile.label, "Caution");
+      assert.equal(profile.requiresApproval, true);
+    },
+  },
+  {
+    name: "delete-prune-write-repair style actions map to dangerous",
+    profile: {
+      deleteData: getActionRiskProfile("delete-data"),
+      pruneDocker: getActionRiskProfile("prune-docker"),
+      writeFile: getActionRiskProfile("write-file"),
+      runRepair: getActionRiskProfile("run-repair"),
+    },
+    verify(profile) {
+      assert.equal(profile.deleteData.riskLevel, "dangerous");
+      assert.equal(profile.pruneDocker.riskLevel, "dangerous");
+      assert.equal(profile.writeFile.riskLevel, "dangerous");
+      assert.equal(profile.runRepair.riskLevel, "dangerous");
+    },
+  },
+  {
+    name: "backend low-medium-high risk metadata normalizes correctly",
+    profile: {
+      low: getActionRiskProfile("fetch-logs", { input: { risk: "low" } }),
+      medium: getActionRiskProfile("restart-service", { input: { risk: "medium", requiresApproval: true } }),
+      high: getActionRiskProfile("write-file", { input: { risk: "high" } }),
+    },
+    verify(profile) {
+      assert.equal(profile.low.riskLevel, "safe");
+      assert.equal(profile.medium.riskLevel, "caution");
+      assert.equal(profile.high.riskLevel, "dangerous");
+    },
+  },
+  {
+    name: "unsupported restart stays blocked in approval copy",
+    profile: getActionRiskProfile(
+      "restart-service",
+      { input: { requiresApproval: true, risk: "medium" } },
+      { service: { host: "windows", manager: "pm2" }, supported: false },
+    ),
+    verify(profile) {
+      assert.equal(profile.riskLevel, "caution");
+      assert.equal(profile.expectedImpact, "Restart is not supported for this service from this executor.");
+    },
+  },
+  {
+    name: "approval preview helper includes impact and rollback for caution-dangerous actions",
+    profile: {
+      caution: getActionRiskProfile("restart-service", { input: { requiresApproval: true } }),
+      dangerous: getActionRiskProfile("write-file", { input: { risk: "high" } }),
+      showCaution: shouldShowActionApprovalPreview("restart-service", { input: { requiresApproval: true } }),
+      showDangerous: shouldShowActionApprovalPreview("write-file", { input: { risk: "high" } }),
+    },
+    verify(profile) {
+      assert.ok(profile.caution.expectedImpact.length > 0);
+      assert.ok(profile.caution.rollbackNote.length > 0);
+      assert.ok(profile.dangerous.expectedImpact.length > 0);
+      assert.ok(profile.dangerous.rollbackNote.length > 0);
+      assert.equal(profile.showCaution, true);
+      assert.equal(profile.showDangerous, true);
+    },
+  },
+];
+
+for (const testCase of actionRiskCases) {
+  testCase.verify(testCase.profile);
+  results.push({
+    name: testCase.name,
+    actionRisk: testCase.profile?.riskLevel || "multi",
+    actionApprovalPreview:
+      typeof testCase.profile?.requiresApproval === "boolean" ? String(testCase.profile.requiresApproval) : "mixed",
   });
 }
 
