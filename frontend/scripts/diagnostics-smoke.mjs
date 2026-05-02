@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 
 import { buildActionApprovalContext, evaluateApprovalFreshnessGate } from "../src/actionApproval.js";
 import { buildAssistantContext, buildAssistantRequestPayload } from "../src/assistantContext.js";
+import { buildAssistantPlanCards } from "../src/assistantPlans.js";
 import { getActionRiskProfile, shouldShowActionApprovalPreview } from "../src/actionRisk.js";
 import {
   buildDependencyHealthRollup,
@@ -1312,6 +1313,48 @@ const assistantApprovalContext = buildActionApprovalContext({
   now: FRESHNESS_NOW,
 });
 const assistantRestartRiskProfile = getActionRiskProfile("restart-service");
+const assistantAuditEntries = [
+  {
+    id: "audit-restart-1",
+    target: "garage-admin-v2",
+    actionType: "restart-service",
+    status: "failed",
+    createdAt: "2026-05-01T11:40:00Z",
+    requestedBy: "operator-a",
+  },
+  {
+    id: "audit-health-1",
+    target: "garage-admin-v2",
+    actionType: "health-check",
+    status: "completed",
+    createdAt: "2026-05-01T11:20:00Z",
+    requestedBy: "operator-a",
+  },
+];
+const assistantReportLookupItem = {
+  id: "report:garage-admin-v2-runbook",
+  kind: "report",
+  title: "Garage Admin V2 Runbook",
+  reportId: "garage-admin-v2-runbook",
+  snippet: "Operator runbook for Garage Admin V2 recovery and ownership boundaries.",
+  sourceLabel: "Registry metadata",
+  hostContext: "docs",
+  preview: "SHOULD_NOT_APPEAR_IN_PLAN",
+  previewAvailable: true,
+};
+const assistantFileLookupItem = {
+  id: "preview:readme",
+  kind: "file-preview",
+  title: "README.md",
+  relativePath: "README.md",
+  path: "C:/workspace/README.md",
+  snippet: "Matched filename/path: README.md",
+  sourceLabel: "Allowlisted filesystem",
+  hostContext: "windows",
+  preview: "FULL FILE CONTENT SHOULD NOT APPEAR",
+  truncated: true,
+  previewAvailable: true,
+};
 
 const assistantContextCases = [
   {
@@ -1451,6 +1494,173 @@ results.push({
   assistantRequestHasContext: Boolean(assistantRequestPayload.assistantContext),
   assistantRequestHasLogsField: Object.prototype.hasOwnProperty.call(assistantRequestPayload, "logs"),
   assistantRequestGroundingRules: assistantRequestPayload.promptScaffold.groundingRules.length,
+});
+
+const assistantNoServiceContext = buildAssistantContext({
+  selectedService: "",
+  selectedServiceRecord: null,
+  services: assistantServices,
+  diagnosis: null,
+  diagnosisLogEvents: [],
+  logSummary: {
+    hasLogs: false,
+    lineCount: 0,
+    visibleLineCount: 0,
+    alertCount: 0,
+    summary: "No log alerts in current output.",
+  },
+  inventoryFreshness: assistantInventoryFreshness,
+  dependencyRollup: null,
+  approvalContext: null,
+  restartRiskProfile: null,
+  latestAction: null,
+  capabilities: {
+    logs: {
+      supported: false,
+    },
+    health: {
+      supported: false,
+    },
+    restart: {
+      supported: false,
+    },
+  },
+});
+
+const assistantNoServicePlans = buildAssistantPlanCards({
+  activePlanChipId: "build-diagnosis-plan",
+  assistantContext: assistantNoServiceContext,
+  auditEntries: [],
+  lookupItems: [],
+});
+const assistantNoServiceDiagnosisPlan =
+  assistantNoServicePlans.find((card) => card.planType === "diagnose failed service") || null;
+
+assert.ok(assistantNoServiceDiagnosisPlan);
+assert.equal(assistantNoServiceDiagnosisPlan.targetService, null);
+assert.ok(assistantNoServiceDiagnosisPlan.readOnlySteps[0].includes("Select a service first"));
+results.push({
+  name: "assistant plan cards build without a selected service",
+  assistantPlanCount: assistantNoServicePlans.length,
+  assistantPlanHasDiagnosis: Boolean(assistantNoServiceDiagnosisPlan),
+});
+
+const assistantDiagnosisPlans = buildAssistantPlanCards({
+  activePlanChipId: "build-diagnosis-plan",
+  assistantContext: assistantContextCases[0].context,
+  restartApprovalContext: assistantApprovalContext,
+  restartRiskProfile: assistantRestartRiskProfile,
+  auditEntries: assistantAuditEntries,
+  lookupItems: [assistantReportLookupItem],
+  selectedLookupItem: assistantReportLookupItem,
+});
+const assistantDiagnosisPlan =
+  assistantDiagnosisPlans.find((card) => card.planType === "diagnose failed service") || null;
+
+assert.ok(assistantDiagnosisPlan);
+assert.equal(assistantDiagnosisPlan.targetService?.id, "garage-admin-v2");
+assert.ok(assistantDiagnosisPlan.readOnlySteps.length >= 1);
+assert.equal(assistantDiagnosisPlan.hostOwnership.label, "Windows runtime/operator");
+results.push({
+  name: "assistant diagnosis plan includes selected service and read-only steps",
+  assistantDiagnosisPlanTarget: assistantDiagnosisPlan.targetService?.id || "none",
+  assistantDiagnosisPlanSteps: assistantDiagnosisPlan.readOnlySteps.length,
+});
+
+const assistantRestartPlans = buildAssistantPlanCards({
+  activePlanChipId: "build-restart-request-plan",
+  assistantContext: assistantContextCases[0].context,
+  restartApprovalContext: assistantApprovalContext,
+  restartRiskProfile: assistantRestartRiskProfile,
+  auditEntries: assistantAuditEntries,
+  lookupItems: [assistantReportLookupItem],
+  selectedLookupItem: assistantReportLookupItem,
+});
+const assistantRestartPlan =
+  assistantRestartPlans.find((card) => card.planType === "prepare restart request") || null;
+
+assert.ok(assistantRestartPlan);
+assert.equal(assistantRestartPlan.risk.level, "caution");
+assert.ok(assistantRestartPlan.approvalSteps.length >= 1);
+assert.ok(assistantRestartPlan.blockedNote.includes("cannot restart"));
+results.push({
+  name: "assistant restart plan stays approval-routed",
+  assistantRestartPlanRisk: assistantRestartPlan.risk.level,
+  assistantRestartPlanApprovalSteps: assistantRestartPlan.approvalSteps.length,
+  assistantRestartPlanGate: assistantRestartPlan.freshnessGateStatus?.label || "none",
+});
+
+const assistantStalePlans = buildAssistantPlanCards({
+  activePlanChipId: "build-stale-inventory-plan",
+  assistantContext: assistantContextCases[0].context,
+  restartApprovalContext: assistantApprovalContext,
+});
+const assistantStalePlan =
+  assistantStalePlans.find((card) => card.planType === "explain stale inventory") || null;
+
+assert.ok(assistantStalePlan);
+assert.ok(
+  assistantStalePlan.currentEvidenceSummary.includes("stale") ||
+    assistantStalePlan.freshnessGateStatus?.label?.toLowerCase().includes("stale") ||
+    assistantStalePlan.freshnessGateStatus?.label === "Acknowledge stale context",
+);
+results.push({
+  name: "assistant stale inventory plan includes freshness warning",
+  assistantStalePlanGate: assistantStalePlan.freshnessGateStatus?.label || "none",
+});
+
+const assistantDependencyPlans = buildAssistantPlanCards({
+  activePlanChipId: "build-dependency-trace-plan",
+  assistantContext: assistantContextCases[0].context,
+  lookupItems: [],
+});
+const assistantDependencyPlan =
+  assistantDependencyPlans.find((card) => card.planType === "trace dependency failure") || null;
+
+assert.ok(assistantDependencyPlan);
+assert.ok(
+  assistantDependencyPlan.currentEvidenceSummary.includes("Admin Proxy") ||
+    assistantDependencyPlan.currentEvidenceSummary.includes("admin-proxy"),
+);
+assert.ok(assistantDependencyPlan.supportingEvidence.some((evidence) => evidence.title.includes("Admin Proxy")));
+results.push({
+  name: "assistant dependency trace plan uses declared dependency evidence",
+  assistantDependencyPlanEvidenceCount: assistantDependencyPlan.supportingEvidence.length,
+});
+
+const assistantReportPlans = buildAssistantPlanCards({
+  activePlanChipId: "build-report-evidence-plan",
+  assistantContext: assistantContextCases[0].context,
+  lookupItems: [assistantReportLookupItem],
+  selectedLookupItem: assistantReportLookupItem,
+});
+const assistantReportPlan =
+  assistantReportPlans.find((card) => card.planType === "find supporting report/runbook") || null;
+
+assert.ok(assistantReportPlan);
+assert.ok(assistantReportPlan.currentEvidenceSummary.includes("Garage Admin V2 Runbook"));
+assert.ok(!assistantReportPlan.currentEvidenceSummary.includes("SHOULD_NOT_APPEAR_IN_PLAN"));
+results.push({
+  name: "assistant report evidence plan references lookup result without dumping preview content",
+  assistantReportPlanEvidenceCount: assistantReportPlan.supportingEvidence.length,
+});
+
+const assistantFilePlans = buildAssistantPlanCards({
+  activePlanChipId: "build-file-evidence-plan",
+  assistantContext: assistantContextCases[0].context,
+  lookupItems: [assistantFileLookupItem],
+  selectedLookupItem: assistantFileLookupItem,
+});
+const assistantFilePlan =
+  assistantFilePlans.find((card) => card.planType === "inspect safe file evidence") || null;
+
+assert.ok(assistantFilePlan);
+assert.ok(assistantFilePlan.currentEvidenceSummary.includes("README.md"));
+assert.ok(!assistantFilePlan.currentEvidenceSummary.includes("FULL FILE CONTENT SHOULD NOT APPEAR"));
+assert.ok(!assistantFilePlan.supportingEvidence[0].summary.includes("FULL FILE CONTENT SHOULD NOT APPEAR"));
+results.push({
+  name: "assistant file evidence plan references lookup result without dumping preview content",
+  assistantFilePlanEvidenceCount: assistantFilePlan.supportingEvidence.length,
 });
 
 console.log(JSON.stringify({ ok: true, cases: results }, null, 2));

@@ -3,6 +3,7 @@ import { buildActionApprovalContext, evaluateApprovalFreshnessGate, formatApprov
 import { formatActionTypeLabel, getActionRiskProfile, shouldShowActionApprovalPreview } from "./actionRisk";
 import { buildAssistantContext, buildAssistantRequestPayload } from "./assistantContext";
 import { ASSISTANT_LOOKUP_CHIPS, buildAssistantLookupInvocation, createAssistantSelection } from "./assistantLookup";
+import { ASSISTANT_PLAN_CHIPS, buildAssistantPlanCards } from "./assistantPlans";
 import { buildDependencyHealthRollup, describeInventoryFreshness } from "./dependencyHealth";
 import { extractServiceDiagnosis } from "./diagnostics";
 
@@ -665,6 +666,154 @@ function AssistantLookupResults({ lookup, selection, onSelectItem, onPreviewItem
           </article>
         );
       })}
+    </div>
+  );
+}
+
+function assistantPlanStatusClass(status) {
+  if (!status) {
+    return "status-badge status-risk-unknown";
+  }
+
+  if (status.appearance === "freshness") {
+    return `signal-freshness-badge signal-freshness-badge-${status.tone || "unknown"}`;
+  }
+
+  return `status-badge status-risk-${status.tone || "unknown"}`;
+}
+
+function assistantPlanEvidenceSafetyClass(label) {
+  const normalized = lookupText(label).toLowerCase();
+
+  if (normalized === "blocked") {
+    return "status-badge status-failed";
+  }
+
+  if (normalized === "guarded") {
+    return "status-badge status-warning";
+  }
+
+  return "status-badge status-completed";
+}
+
+function AssistantPlanCards({ cards, onRunAction }) {
+  const items = normalizeObjectCollection(cards);
+
+  if (!items.length) {
+    return null;
+  }
+
+  return (
+    <div className="assistant-plan-list">
+      {items.map((card) => (
+        <article
+          key={card.id || `${card.planType || "plan"}-${card.targetService?.id || "none"}`}
+          className={`assistant-plan-card assistant-plan-card-${card.risk?.level || "unknown"}`}
+        >
+          <div className="assistant-plan-header">
+            <div className="assistant-plan-heading">
+              <span className="detail-label">{card.planType || "Operator plan"}</span>
+              <strong>{card.title || "Operator plan"}</strong>
+              {card.targetService?.name ? (
+                <div className="assistant-plan-target">Target: {card.targetService.name}</div>
+              ) : null}
+            </div>
+            <div className="inline-badges assistant-plan-badges">
+              <span className="status-badge status-info">{card.hostOwnership?.label || "Unknown"}</span>
+              <span
+                className={`status-badge status-risk-${card.risk?.level || "unknown"}`}
+                title={card.risk?.detail || "Risk level"}
+              >
+                {card.risk?.label || "Unknown"}
+              </span>
+              {card.freshnessGateStatus?.label ? (
+                <span
+                  className={assistantPlanStatusClass(card.freshnessGateStatus)}
+                  title={card.freshnessGateStatus.detail || card.freshnessGateStatus.label}
+                >
+                  {card.freshnessGateStatus.label}
+                </span>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="assistant-plan-summary">{card.currentEvidenceSummary}</div>
+
+          {Array.isArray(card.readOnlySteps) && card.readOnlySteps.length ? (
+            <div className="assistant-plan-section">
+              <span className="detail-label">Read-only first steps</span>
+              <ol className="assistant-plan-step-list">
+                {card.readOnlySteps.map((step) => (
+                  <li key={step}>{step}</li>
+                ))}
+              </ol>
+            </div>
+          ) : null}
+
+          {Array.isArray(card.approvalSteps) && card.approvalSteps.length ? (
+            <div className="assistant-plan-section">
+              <span className="detail-label">Approval-required steps</span>
+              <ol className="assistant-plan-step-list assistant-plan-step-list-approval">
+                {card.approvalSteps.map((step) => (
+                  <li key={step}>{step}</li>
+                ))}
+              </ol>
+            </div>
+          ) : null}
+
+          <div className="assistant-plan-meta">
+            {card.expectedImpact ? (
+              <div className="assistant-plan-note">
+                <strong>Expected impact:</strong> {card.expectedImpact}
+              </div>
+            ) : null}
+            {card.rollbackNote ? (
+              <div className="assistant-plan-note">
+                <strong>Rollback:</strong> {card.rollbackNote}
+              </div>
+            ) : null}
+            {card.blockedNote ? (
+              <div className="assistant-plan-note assistant-plan-note-warning">
+                <strong>Blocked from chat:</strong> {card.blockedNote}
+              </div>
+            ) : null}
+          </div>
+
+          {Array.isArray(card.supportingEvidence) && card.supportingEvidence.length ? (
+            <div className="assistant-plan-section">
+              <span className="detail-label">Supporting evidence</span>
+              <div className="assistant-plan-evidence-list">
+                {card.supportingEvidence.map((evidence) => (
+                  <div key={evidence.key || `${evidence.kind}-${evidence.title}`} className="assistant-plan-evidence-item">
+                    <div className="assistant-plan-evidence-header">
+                      <strong>{evidence.title || evidence.kind || "Evidence"}</strong>
+                      <div className="inline-badges assistant-plan-evidence-badges">
+                        {evidence.kind ? <span className="status-badge status-info">{evidence.kind}</span> : null}
+                        {evidence.safetyLabel ? (
+                          <span className={assistantPlanEvidenceSafetyClass(evidence.safetyLabel)}>{evidence.safetyLabel}</span>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="assistant-plan-evidence-summary">{evidence.summary}</div>
+                    <div className="assistant-plan-evidence-meta">
+                      {[evidence.hostOwnership?.label, evidence.sourceLabel].filter(Boolean).join(" | ")}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {card.nextRecommendedAction?.label ? (
+            <div className="assistant-plan-footer">
+              <span className="detail-label">Next UI action</span>
+              <button type="button" className="mini-button" onClick={(event) => onRunAction(card.nextRecommendedAction, event)}>
+                {card.nextRecommendedAction.label}
+              </button>
+            </div>
+          ) : null}
+        </article>
+      ))}
     </div>
   );
 }
@@ -2381,6 +2530,7 @@ export default function App() {
   const [chatError, setChatError] = useState(null);
   const [messages, setMessages] = useState([]);
   const [assistantSelection, setAssistantSelection] = useState(null);
+  const [activeAssistantPlanChipId, setActiveAssistantPlanChipId] = useState("");
   const [input, setInput] = useState("");
   const opsGridRef = useRef(null);
   const chatRequestIdRef = useRef(0);
@@ -2644,6 +2794,11 @@ export default function App() {
   const logsArchiveItems = normalizeObjectCollection(logsArchive);
   const expandedAuditItemIds = normalizeStringArray(expandedAuditIds);
   const chatMessages = normalizeObjectCollection(messages);
+  const assistantLookupItems = [...chatMessages]
+    .reverse()
+    .flatMap((message) => normalizeObjectCollection(message.lookup?.items));
+  const selectedAssistantLookupItem =
+    assistantLookupItems.find((item) => isLookupItemSelected(item, assistantSelection)) || null;
   const selectedIncident = incidentItems.find((incident) => incident.id === selectedIncidentId) || null;
   const selectedServiceRecord = serviceItems.find((service) => service.name === selectedService) || null;
   const serviceInventoryFreshness = describeInventoryFreshness(serviceInventorySnapshot, {
@@ -2751,6 +2906,8 @@ export default function App() {
   useEffect(() => {
     chatRequestIdRef.current += 1;
     setMessages([]);
+    setAssistantSelection(null);
+    setActiveAssistantPlanChipId("");
     setInput("");
     setChatError(null);
     setChatLoading(false);
@@ -3488,7 +3645,18 @@ export default function App() {
       health: selectedServiceHealthCapability,
       restart: selectedServiceRestartCapability,
     },
-    selectedIncident,
+      selectedIncident,
+  });
+  const assistantPlanCards = buildAssistantPlanCards({
+    activePlanChipId: activeAssistantPlanChipId,
+    assistantContext,
+    restartApprovalContext,
+    restartRiskProfile,
+    auditEntries: selectedService ? selectedServiceAudit : visibleAudit,
+    lookupItems: assistantLookupItems,
+    selectedLookupItem: selectedAssistantLookupItem,
+    healthOutput,
+    healthMeta,
   });
   const extractedEventsEmptyMessage = !selectedService
     ? "Select a service to review extracted log events."
@@ -3772,6 +3940,10 @@ export default function App() {
     submitChatMessage(prompt).catch(() => {});
   }
 
+  function handleAssistantPlanChip(chipId) {
+    setActiveAssistantPlanChipId((current) => (current === chipId ? "" : chipId));
+  }
+
   function handleAssistantLookupAction(actionId, overrides = {}) {
     const invocation = buildAssistantLookupInvocation(actionId, {
       input,
@@ -3817,6 +3989,55 @@ export default function App() {
       query: item.title,
       reportId: item.reportId,
     });
+  }
+
+  function runAssistantPlanAction(action, event) {
+    event?.stopPropagation?.();
+
+    if (!action || typeof action !== "object") {
+      return;
+    }
+
+    if (action.serviceName && action.serviceName !== selectedService) {
+      setSelectedService(action.serviceName);
+    }
+
+    if (action.id === "refresh-inventory") {
+      handleRefreshInventory(event);
+      return;
+    }
+
+    if (action.id === "open-service-actions") {
+      setShowRestartForm(true);
+      setRestartError(null);
+      return;
+    }
+
+    if (action.id === "query-logs") {
+      handleAssistantLookupAction("logs-query", {
+        service: action.serviceName || selectedService,
+      });
+      return;
+    }
+
+    if (action.id === "find-report") {
+      handleAssistantLookupAction("reports", {
+        input: action.query || "",
+        title: action.query || "",
+      });
+      return;
+    }
+
+    if (action.id === "search-files") {
+      handleAssistantLookupAction("search-files", {
+        input: action.query || "",
+      });
+      return;
+    }
+
+    if ((action.id === "open-report-preview" || action.id === "open-safe-file-preview") && action.item) {
+      handlePreviewAssistantItem(action.item);
+    }
   }
 
   function applySuggestedAction(proposedAction) {
@@ -5041,6 +5262,23 @@ export default function App() {
                 </button>
               ))}
             </div>
+            <div className="assistant-plan-chip-copy">
+              <span className="detail-label">Operator Plans</span>
+            </div>
+            <div className="assistant-plan-chip-row">
+              {ASSISTANT_PLAN_CHIPS.map((chip) => (
+                <button
+                  key={chip.id}
+                  type="button"
+                  className={`assistant-prompt-chip assistant-plan-chip ${
+                    activeAssistantPlanChipId === chip.id ? "assistant-plan-chip-active" : ""
+                  }`}
+                  onClick={() => handleAssistantPlanChip(chip.id)}
+                >
+                  {chip.label}
+                </button>
+              ))}
+            </div>
             <div className="assistant-lookup-chip-row">
               {ASSISTANT_LOOKUP_CHIPS.map((chip) => (
                 <button
@@ -5060,6 +5298,7 @@ export default function App() {
               </div>
             ) : null}
           </div>
+          <AssistantPlanCards cards={assistantPlanCards} onRunAction={runAssistantPlanAction} />
           {!chatMessages.length && !chatLoading ? (
             <div className="message system">Ask one of the quick prompts or type a question grounded in the selected service.</div>
           ) : null}

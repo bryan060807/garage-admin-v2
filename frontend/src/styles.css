@@ -2185,6 +2185,141 @@ button {
   padding-left: 8px;
 }
 
+.assistant-plan-chip-copy {
+  margin-top: 2px;
+}
+
+.assistant-plan-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.assistant-plan-chip-active {
+  border-color: rgba(125, 183, 224, 0.34);
+  background: rgba(125, 183, 224, 0.16);
+}
+
+.assistant-plan-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.assistant-plan-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  padding: 11px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.assistant-plan-card-safe {
+  border-color: rgba(125, 183, 224, 0.16);
+}
+
+.assistant-plan-card-caution {
+  border-color: rgba(224, 188, 125, 0.24);
+}
+
+.assistant-plan-card-dangerous {
+  border-color: rgba(224, 138, 125, 0.26);
+}
+
+.assistant-plan-header,
+.assistant-plan-evidence-header,
+.assistant-plan-footer {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.assistant-plan-heading {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.assistant-plan-badges,
+.assistant-plan-evidence-badges {
+  justify-content: flex-end;
+}
+
+.assistant-plan-target,
+.assistant-plan-evidence-meta {
+  font-size: 12px;
+  color: var(--text-soft);
+}
+
+.assistant-plan-summary {
+  color: #edf2f7;
+  line-height: 1.45;
+}
+
+.assistant-plan-section {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.assistant-plan-step-list {
+  margin: 0;
+  padding-left: 18px;
+  color: #dce4ec;
+}
+
+.assistant-plan-step-list li + li {
+  margin-top: 4px;
+}
+
+.assistant-plan-step-list-approval {
+  color: #fbd38d;
+}
+
+.assistant-plan-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.assistant-plan-note {
+  color: #dce4ec;
+  line-height: 1.4;
+}
+
+.assistant-plan-note strong {
+  color: #edf2f7;
+}
+
+.assistant-plan-note-warning {
+  color: #fbd38d;
+}
+
+.assistant-plan-evidence-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.assistant-plan-evidence-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--border-quiet);
+  border-radius: 10px;
+  padding: 9px 10px;
+  background: rgba(6, 12, 18, 0.42);
+}
+
+.assistant-plan-evidence-summary {
+  color: #dce4ec;
+  line-height: 1.4;
+}
+
 .messages {
   display: flex;
   min-height: 0;
