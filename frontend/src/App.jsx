@@ -11,11 +11,36 @@ const RIGHT_PANEL_SPLIT_STORAGE_KEY = "garage-admin-v2:right-panel-split";
 const LAYOUT_CUSTOMIZATION_VERSION = 1;
 const LAYOUT_CUSTOMIZATION_STORAGE_KEY = `garage-admin-v2:experimental-layout:v${LAYOUT_CUSTOMIZATION_VERSION}`;
 const ASSISTANT_MODE_STORAGE_KEY = "garage-admin-v2:assistant-mode";
+const ASSISTANT_LAUNCHER_POSITION_STORAGE_KEY = "garage-admin-v2:assistant-launcher-position";
 const ASSISTANT_MODES = Object.freeze({
   MINIMIZED: "minimized",
   DOCKED: "docked",
   EXPANDED: "expanded",
 });
+const ASSISTANT_LAUNCHER_POSITIONS = Object.freeze({
+  BOTTOM_RIGHT: "bottom-right",
+  RIGHT_CENTER: "right-center",
+  BOTTOM_CENTER: "bottom-center",
+});
+const ASSISTANT_LAUNCHER_POSITION_ORDER = [
+  ASSISTANT_LAUNCHER_POSITIONS.RIGHT_CENTER,
+  ASSISTANT_LAUNCHER_POSITIONS.BOTTOM_RIGHT,
+  ASSISTANT_LAUNCHER_POSITIONS.BOTTOM_CENTER,
+];
+const ASSISTANT_LAUNCHER_POSITION_META = {
+  [ASSISTANT_LAUNCHER_POSITIONS.BOTTOM_RIGHT]: {
+    label: "Bottom right",
+    shortLabel: "BR",
+  },
+  [ASSISTANT_LAUNCHER_POSITIONS.RIGHT_CENTER]: {
+    label: "Right center",
+    shortLabel: "RC",
+  },
+  [ASSISTANT_LAUNCHER_POSITIONS.BOTTOM_CENTER]: {
+    label: "Bottom center",
+    shortLabel: "BC",
+  },
+};
 const ENABLE_EXPERIMENTAL_LAYOUT_CUSTOMIZATION = ["1", "true", "yes", "on"].includes(
   String(import.meta.env.VITE_ENABLE_EXPERIMENTAL_LAYOUT_CUSTOMIZATION || "").toLowerCase(),
 );
@@ -214,6 +239,45 @@ function saveAssistantMode(mode) {
   } catch (_error) {
     // localStorage can be unavailable in locked-down browser contexts.
   }
+}
+
+function normalizeAssistantLauncherPosition(value) {
+  if (ASSISTANT_LAUNCHER_POSITION_ORDER.includes(value)) {
+    return value;
+  }
+
+  return ASSISTANT_LAUNCHER_POSITIONS.RIGHT_CENTER;
+}
+
+function loadAssistantLauncherPosition() {
+  try {
+    if (typeof window === "undefined") {
+      return ASSISTANT_LAUNCHER_POSITIONS.RIGHT_CENTER;
+    }
+
+    return normalizeAssistantLauncherPosition(window.localStorage.getItem(ASSISTANT_LAUNCHER_POSITION_STORAGE_KEY));
+  } catch (_error) {
+    return ASSISTANT_LAUNCHER_POSITIONS.RIGHT_CENTER;
+  }
+}
+
+function saveAssistantLauncherPosition(position) {
+  try {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(
+        ASSISTANT_LAUNCHER_POSITION_STORAGE_KEY,
+        normalizeAssistantLauncherPosition(position),
+      );
+    }
+  } catch (_error) {
+    // localStorage can be unavailable in locked-down browser contexts.
+  }
+}
+
+function getNextAssistantLauncherPosition(position) {
+  const normalized = normalizeAssistantLauncherPosition(position);
+  const index = ASSISTANT_LAUNCHER_POSITION_ORDER.indexOf(normalized);
+  return ASSISTANT_LAUNCHER_POSITION_ORDER[(index + 1) % ASSISTANT_LAUNCHER_POSITION_ORDER.length];
 }
 
 function formatAssistantHostOwnership(host) {
@@ -2618,6 +2682,7 @@ export default function App() {
   const [activeAssistantPlanChipId, setActiveAssistantPlanChipId] = useState("");
   const [input, setInput] = useState("");
   const [assistantMode, setAssistantMode] = useState(loadAssistantMode);
+  const [assistantLauncherPosition, setAssistantLauncherPosition] = useState(loadAssistantLauncherPosition);
   const [assistantSeenResponseCount, setAssistantSeenResponseCount] = useState(0);
   const opsGridRef = useRef(null);
   const chatRequestIdRef = useRef(0);
@@ -2671,6 +2736,10 @@ export default function App() {
   useEffect(() => {
     saveAssistantMode(assistantMode);
   }, [assistantMode]);
+
+  useEffect(() => {
+    saveAssistantLauncherPosition(assistantLauncherPosition);
+  }, [assistantLauncherPosition]);
 
   useEffect(() => {
     if (assistantMode !== ASSISTANT_MODES.EXPANDED) {
@@ -4190,6 +4259,11 @@ export default function App() {
     setAssistantMode(ASSISTANT_MODES.MINIMIZED);
   }
 
+  function handleCycleAssistantLauncherPosition() {
+    setAssistantLauncherPosition((current) => getNextAssistantLauncherPosition(current));
+  }
+
+  const isAssistantMinimized = assistantMode === ASSISTANT_MODES.MINIMIZED;
   const isAssistantDocked = assistantMode === ASSISTANT_MODES.DOCKED;
   const isAssistantExpanded = assistantMode === ASSISTANT_MODES.EXPANDED;
   const assistantUnreadCount =
@@ -4210,9 +4284,40 @@ export default function App() {
     needsAttention: assistantNeedsAttention,
   });
   const assistantLauncherSummary = assistantAttentionState.summary;
-  const assistantLauncherAriaLabel = assistantAttentionState.labels.length
-    ? `Open assistant. ${assistantAttentionState.labels.join(", ")}.`
-    : "Open assistant.";
+  const assistantLauncherPositionMeta =
+    ASSISTANT_LAUNCHER_POSITION_META[assistantLauncherPosition] ||
+    ASSISTANT_LAUNCHER_POSITION_META[ASSISTANT_LAUNCHER_POSITIONS.RIGHT_CENTER];
+  const assistantLauncherNextPosition = getNextAssistantLauncherPosition(assistantLauncherPosition);
+  const assistantLauncherNextPositionMeta =
+    ASSISTANT_LAUNCHER_POSITION_META[assistantLauncherNextPosition] ||
+    ASSISTANT_LAUNCHER_POSITION_META[ASSISTANT_LAUNCHER_POSITIONS.RIGHT_CENTER];
+  const assistantLauncherNotificationBadge =
+    assistantUnreadCount > 0
+      ? {
+          className: "assistant-launcher-badge-unread",
+          label: assistantUnreadCount > 99 ? "99+" : String(assistantUnreadCount),
+          title: assistantUnreadCount === 1 ? "1 unread assistant response" : `${assistantUnreadCount} unread assistant responses`,
+        }
+      : assistantNeedsAttention
+        ? {
+            className: "assistant-launcher-badge-alert",
+            label: "!",
+            title: "Assistant context needs attention",
+          }
+        : null;
+  const showAssistantContextBadge = Boolean(assistantServiceLabel) && !assistantLauncherNotificationBadge;
+  const assistantLauncherTooltip = [
+    assistantServiceLabel ? `Selected service: ${assistantServiceLabel}` : "No service selected",
+    assistantHostOwnershipLabel ? `Host: ${assistantHostOwnershipLabel}` : "",
+    assistantLauncherSummary,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const assistantLauncherAriaLabel = [
+    "Open assistant",
+    assistantServiceLabel ? `selected service ${assistantServiceLabel}` : "no service selected",
+    assistantAttentionState.labels.length ? assistantAttentionState.labels.join(", ") : "ready when needed",
+  ].join(". ") + ".";
   const assistantPanelContent = (
     <section
       className={`chat-panel assistant-panel-window ${
@@ -4430,7 +4535,11 @@ export default function App() {
 
   return (
     <>
-      <div className={`app-shell ${isAssistantDocked ? "app-shell-assistant-docked" : "app-shell-assistant-collapsed"}`}>
+      <div
+        className={`app-shell ${isAssistantDocked ? "app-shell-assistant-docked" : "app-shell-assistant-collapsed"} ${
+          isAssistantMinimized ? "app-shell-assistant-minimized" : ""
+        }`}
+      >
       <aside className="sidebar">
         <div className="sidebar-header">
           <span className="eyebrow">Garage Admin V2</span>
@@ -4632,7 +4741,7 @@ export default function App() {
             resetKey={`${selectedService || "none"}-${selectedServiceRecord?.lastSeen || "na"}`}
             serviceName={selectedServiceRecord?.displayName || selectedService || ""}
           >
-          <div className="workspace-columns">
+          <div className={`workspace-columns ${isAssistantMinimized ? "workspace-columns-assistant-minimized" : ""}`}>
             <div className="workspace-main-column">
           {selectedServiceRecord ? (
             <DisclosureSection
@@ -5011,7 +5120,7 @@ export default function App() {
 
             <div className="workspace-side-column">
               <section
-                className="ops-grid"
+                className={`ops-grid ${isAssistantMinimized ? "ops-grid-assistant-minimized" : ""}`}
                 ref={opsGridRef}
                 style={{
                   "--right-top-track": `${rightPanelSplit}fr`,
@@ -5596,32 +5705,44 @@ export default function App() {
         </div>
       ) : null}
       {!isAssistantDocked && !isAssistantExpanded ? (
-        <button
-          type="button"
-          className={`assistant-launcher ${assistantNeedsAttention ? "assistant-launcher-attention" : ""}`}
-          onClick={handleOpenAssistantExpanded}
-          aria-label={assistantLauncherAriaLabel}
-        >
-          <div className="assistant-launcher-header">
-            <div className="assistant-launcher-title">
-              <span className="section-title">Assistant</span>
-              <strong>AI Assistant</strong>
-            </div>
-            {assistantAttentionState.count ? <span className="count-pill">{assistantAttentionState.count}</span> : null}
-          </div>
-          <div className="assistant-launcher-context">
-            {assistantServiceLabel ? `${assistantServiceLabel} ready` : "Grounded operator context ready when needed."}
-          </div>
-          <div className="assistant-launcher-badges">
-            {assistantAttentionState.labels.map((label) => (
-              <span key={label} className="status-badge status-info">
-                {label}
-              </span>
-            ))}
-            {!assistantAttentionState.labels.length ? <span className="status-badge status-info">Open assistant</span> : null}
-          </div>
-          <div className="assistant-launcher-summary">{assistantLauncherSummary}</div>
-        </button>
+        <div className={`assistant-launcher-cluster assistant-launcher-cluster-${assistantLauncherPosition}`}>
+          <button
+            type="button"
+            className={`assistant-launcher ${assistantNeedsAttention ? "assistant-launcher-attention" : ""}`}
+            onClick={handleOpenAssistantExpanded}
+            aria-label={assistantLauncherAriaLabel}
+            title={assistantLauncherTooltip}
+          >
+            <span className="assistant-launcher-mark" aria-hidden="true">
+              AI
+            </span>
+            <span className="assistant-launcher-label">Assistant</span>
+            <span className="assistant-launcher-status">
+              {showAssistantContextBadge ? (
+                <span className="assistant-launcher-badge assistant-launcher-badge-context" title={assistantLauncherTooltip}>
+                  CTX
+                </span>
+              ) : null}
+              {assistantLauncherNotificationBadge ? (
+                <span
+                  className={`assistant-launcher-badge ${assistantLauncherNotificationBadge.className}`}
+                  title={assistantLauncherNotificationBadge.title}
+                >
+                  {assistantLauncherNotificationBadge.label}
+                </span>
+              ) : null}
+            </span>
+          </button>
+          <button
+            type="button"
+            className="assistant-launcher-position"
+            onClick={handleCycleAssistantLauncherPosition}
+            aria-label={`Move assistant launcher. Current position ${assistantLauncherPositionMeta.label}. Next position ${assistantLauncherNextPositionMeta.label}.`}
+            title={`Launcher position: ${assistantLauncherPositionMeta.label}. Click to move to ${assistantLauncherNextPositionMeta.label}.`}
+          >
+            {assistantLauncherPositionMeta.shortLabel}
+          </button>
+        </div>
       ) : null}
     </>
   );
