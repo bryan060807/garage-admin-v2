@@ -3,6 +3,18 @@ import { buildActionApprovalContext, evaluateApprovalFreshnessGate, formatApprov
 import { formatActionTypeLabel, getActionRiskProfile, shouldShowActionApprovalPreview } from "./actionRisk";
 import { buildAssistantContext, buildAssistantRequestPayload } from "./assistantContext";
 import { ASSISTANT_LOOKUP_CHIPS, buildAssistantLookupInvocation, createAssistantSelection } from "./assistantLookup";
+import {
+  ASSISTANT_TONE_HELPER_TEXT,
+  ASSISTANT_TONE_OPTIONS,
+  formatAssistantContextForTone,
+  formatAssistantMessageForTone,
+  formatAssistantPlanCardForTone,
+  formatAssistantText,
+  getAssistantToneMeta,
+  loadAssistantTone,
+  normalizeAssistantTone,
+  saveAssistantTone,
+} from "./assistantPersonality.js";
 import { ASSISTANT_PLAN_CHIPS, buildAssistantPlanCards } from "./assistantPlans";
 import { buildDependencyHealthRollup, describeInventoryFreshness } from "./dependencyHealth";
 import { extractServiceDiagnosis } from "./diagnostics";
@@ -793,7 +805,11 @@ function AssistantLookupResults({ lookup, selection, onSelectItem, onPreviewItem
               )
             ) : null}
 
-            {item.truncated ? <div className="inline-note assistant-lookup-truncated">Preview truncated by safety cap.</div> : null}
+            {item.truncated ? (
+              <div className="inline-note assistant-lookup-truncated">
+                {item.personalityTruncatedNote || "Preview truncated by the safety cap."}
+              </div>
+            ) : null}
 
             <div className="assistant-lookup-actions">
               {canSelect ? (
@@ -2682,6 +2698,7 @@ export default function App() {
   const [activeAssistantPlanChipId, setActiveAssistantPlanChipId] = useState("");
   const [input, setInput] = useState("");
   const [assistantMode, setAssistantMode] = useState(loadAssistantMode);
+  const [assistantTone, setAssistantTone] = useState(loadAssistantTone);
   const [assistantLauncherPosition, setAssistantLauncherPosition] = useState(loadAssistantLauncherPosition);
   const [assistantSeenResponseCount, setAssistantSeenResponseCount] = useState(0);
   const opsGridRef = useRef(null);
@@ -2736,6 +2753,10 @@ export default function App() {
   useEffect(() => {
     saveAssistantMode(assistantMode);
   }, [assistantMode]);
+
+  useEffect(() => {
+    saveAssistantTone(assistantTone);
+  }, [assistantTone]);
 
   useEffect(() => {
     saveAssistantLauncherPosition(assistantLauncherPosition);
@@ -3845,6 +3866,10 @@ export default function App() {
     healthOutput,
     healthMeta,
   });
+  const assistantToneMeta = getAssistantToneMeta(assistantTone);
+  const assistantDisplayContext = formatAssistantContextForTone(assistantContext, assistantTone);
+  const assistantDisplayPlanCards = assistantPlanCards.map((card) => formatAssistantPlanCardForTone(card, assistantTone));
+  const assistantDisplayMessages = chatMessages.map((message) => formatAssistantMessageForTone(message, assistantTone));
   const extractedEventsEmptyMessage = !selectedService
     ? "Select a service to review extracted log events."
     : "No critical issue detected from the current logs. Review raw logs or run a health check for more context.";
@@ -4270,8 +4295,15 @@ export default function App() {
     assistantMode === ASSISTANT_MODES.MINIMIZED ? Math.max(0, assistantResponseCount - assistantSeenResponseCount) : 0;
   const assistantServiceLabel = selectedServiceRecord?.displayName || selectedServiceRecord?.name || selectedService || "";
   const assistantHostOwnershipLabel = formatAssistantHostOwnership(selectedServiceRecord?.host || assistantContext?.service?.host);
-  const assistantSafetyText =
-    "Read-only chat only. Chat cannot execute restarts, approvals, file writes, or destructive actions.";
+  const assistantSafetyText = formatAssistantText(
+    "Read-only chat only. Chat cannot execute restarts, approvals, file writes, or destructive actions.",
+    {
+      tone: assistantTone,
+      category: "safety",
+      riskLevel: "dangerous",
+      surface: "safety",
+    },
+  );
   const assistantNeedsAttention =
     Boolean(chatError) ||
     restartApprovalContext?.gate?.blockedUntilRefresh === true ||
@@ -4318,6 +4350,20 @@ export default function App() {
     assistantServiceLabel ? `selected service ${assistantServiceLabel}` : "no service selected",
     assistantAttentionState.labels.length ? assistantAttentionState.labels.join(", ") : "ready when needed",
   ].join(". ") + ".";
+  const assistantEmptyStateText = formatAssistantText(
+    selectedService
+      ? "Ask one of the quick prompts or type a question grounded in the selected service."
+      : "Select a service first, then ask a grounded question about its status, logs, or plan.",
+    {
+      tone: assistantTone,
+      category: selectedService ? "empty-state" : "no-service",
+      surface: "empty-state",
+    },
+  );
+  const assistantLoadingText = formatAssistantText("Analyzing current context...", {
+    tone: assistantTone,
+    surface: "loading",
+  });
   const assistantPanelContent = (
     <section
       className={`chat-panel assistant-panel-window ${
@@ -4349,6 +4395,25 @@ export default function App() {
               <span className="status-badge status-info">{assistantHostOwnershipLabel}</span>
             ) : null}
           </div>
+          <div className="assistant-tone-row">
+            <label className="assistant-tone-control">
+              <span className="detail-label">Tone</span>
+              <select
+                className="assistant-tone-select"
+                value={assistantTone}
+                onChange={(event) => setAssistantTone(normalizeAssistantTone(event.target.value))}
+                aria-label="Assistant tone"
+              >
+                {ASSISTANT_TONE_OPTIONS.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <span className="status-badge status-info assistant-tone-indicator">{assistantToneMeta.label}</span>
+          </div>
+          <div className="assistant-tone-note">{ASSISTANT_TONE_HELPER_TEXT}</div>
         </div>
         <div className="assistant-window-controls">
           {isAssistantExpanded ? (
@@ -4389,7 +4454,7 @@ export default function App() {
               {assistantContext.inventory.freshness.label}
             </span>
           </div>
-          <div className="assistant-context-summary">{assistantContext.openingMessage}</div>
+          <div className="assistant-context-summary">{assistantDisplayContext.openingMessage}</div>
           {assistantContext.panelFacts.length ? (
             <div className="assistant-context-facts">
               {assistantContext.panelFacts.map((fact) => (
@@ -4409,7 +4474,7 @@ export default function App() {
               <span className="assistant-context-section-note">Grounded in the selected service and current operator context.</span>
             </div>
             <div className="assistant-prompt-chips">
-              {assistantContext.quickPrompts.map((prompt) => (
+              {assistantDisplayContext.quickPrompts.map((prompt) => (
                 <button
                   key={prompt}
                   type="button"
@@ -4467,11 +4532,11 @@ export default function App() {
             </div>
           ) : null}
         </div>
-        <AssistantPlanCards cards={assistantPlanCards} onRunAction={runAssistantPlanAction} />
+        <AssistantPlanCards cards={assistantDisplayPlanCards} onRunAction={runAssistantPlanAction} />
         {!chatMessages.length && !chatLoading ? (
-          <div className="message system">Ask one of the quick prompts or type a question grounded in the selected service.</div>
+          <div className="message system">{assistantEmptyStateText}</div>
         ) : null}
-        {chatMessages.map((m) => (
+        {assistantDisplayMessages.map((m) => (
           <div key={m.id} className={`message ${m.role}`}>
             {m.content ? <div>{m.content}</div> : null}
             {m.summary ? (
@@ -4519,7 +4584,7 @@ export default function App() {
             ) : null}
           </div>
         ))}
-        {chatLoading ? <div className="message system">Analyzing current context...</div> : null}
+        {chatLoading ? <div className="message system">{assistantLoadingText}</div> : null}
       </div>
 
       <form className="composer" onSubmit={handleChatSubmit}>

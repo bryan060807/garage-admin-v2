@@ -2,6 +2,14 @@ import assert from "node:assert/strict";
 
 import { buildActionApprovalContext, evaluateApprovalFreshnessGate } from "../src/actionApproval.js";
 import { buildAssistantContext, buildAssistantRequestPayload } from "../src/assistantContext.js";
+import {
+  formatAssistantContextForTone,
+  formatAssistantMessageForTone,
+  formatAssistantPlanCardForTone,
+  formatAssistantText,
+  loadAssistantTone,
+  saveAssistantTone,
+} from "../src/assistantPersonality.js";
 import { buildAssistantPlanCards } from "../src/assistantPlans.js";
 import { getActionRiskProfile, shouldShowActionApprovalPreview } from "../src/actionRisk.js";
 import {
@@ -1663,6 +1671,124 @@ assert.ok(!assistantFilePlan.supportingEvidence[0].summary.includes("FULL FILE C
 results.push({
   name: "assistant file evidence plan references lookup result without dumping preview content",
   assistantFilePlanEvidenceCount: assistantFilePlan.supportingEvidence.length,
+});
+
+const normalToneResponse = formatAssistantText(
+  "I do not see a critical issue in the current logs. Run a health check next.",
+  {
+    tone: "normal",
+    category: "healthy",
+  },
+);
+assert.equal(normalToneResponse, "I do not see a critical issue in the current logs. Run a health check next.");
+results.push({
+  name: "assistant normal tone stays professional",
+  normalToneResponse,
+});
+
+const sarcasticToneResponse = formatAssistantText(
+  "No critical issue in the current logs. Run a health check before we trust it.",
+  {
+    tone: "sarcastic",
+    category: "healthy",
+  },
+);
+const mondayToneResponse = formatAssistantText(
+  "No critical issue in the current logs. Run a health check before we trust it.",
+  {
+    tone: "monday",
+    category: "healthy",
+  },
+);
+assert.ok(sarcasticToneResponse.includes("machine has chosen peace"));
+assert.ok(mondayToneResponse.includes("Stunning. Terrifying."));
+results.push({
+  name: "assistant sarcastic and monday tones add personality",
+  sarcasticToneResponse,
+  mondayToneResponse,
+});
+
+const dangerousToneResponse = formatAssistantText(
+  "That is a dangerous action. I am not doing it from chat. Use the approval workflow.",
+  {
+    tone: "monday",
+    category: "dangerous",
+    riskLevel: "dangerous",
+  },
+);
+assert.ok(dangerousToneResponse.includes("not doing it from chat"));
+assert.ok(dangerousToneResponse.includes("approval workflow"));
+assert.ok(!dangerousToneResponse.includes("Stunning. Terrifying."));
+results.push({
+  name: "dangerous action tone stays direct and safe",
+  dangerousToneResponse,
+});
+
+const secretBlockedResponse = formatAssistantText(
+  "I blocked that file because it contains environment variables.",
+  {
+    tone: "sarcastic",
+    category: "secret",
+  },
+);
+assert.ok(secretBlockedResponse.includes("blocked"));
+assert.ok(secretBlockedResponse.includes("credential leaks"));
+results.push({
+  name: "secret-blocked tone stays clear without exposing content",
+  secretBlockedResponse,
+});
+
+const restartMessage = formatAssistantMessageForTone(
+  {
+    id: "assistant-restart-message",
+    role: "assistant",
+    summary: "Chat cannot restart or approve services. Use Service Actions instead.",
+    proposedAction: {
+      type: "restart-service",
+      serviceName: "garage-admin-v2",
+      reason: "Prepare the request in Service Actions after read-only checks.",
+    },
+  },
+  "monday",
+);
+assert.ok(restartMessage.summary.includes("cannot restart or approve"));
+assert.ok(restartMessage.proposedAction.reason.includes("Service Actions"));
+results.push({
+  name: "restart request stays approval-routed from chat",
+  restartSummary: restartMessage.summary,
+});
+
+const fakeStorage = {
+  value: "",
+  getItem() {
+    return this.value;
+  },
+  setItem(_key, value) {
+    this.value = value;
+  },
+};
+const persistedTone = saveAssistantTone("monday", fakeStorage);
+assert.equal(persistedTone, "monday");
+assert.equal(fakeStorage.value, "monday");
+assert.equal(loadAssistantTone(fakeStorage), "monday");
+results.push({
+  name: "assistant tone persistence stores only the mode string",
+  storedValue: fakeStorage.value,
+});
+
+const noServiceToneContext = formatAssistantContextForTone(assistantNoServiceContext, "sarcastic");
+assert.ok(noServiceToneContext.openingMessage.includes("Select a service"));
+assert.ok(noServiceToneContext.openingMessage.includes("Interpretive operations are still unsupported."));
+results.push({
+  name: "assistant no-service state remains helpful with tone applied",
+  noServiceOpeningMessage: noServiceToneContext.openingMessage,
+});
+
+const tonedRestartPlan = formatAssistantPlanCardForTone(assistantRestartPlan, "monday");
+assert.ok(tonedRestartPlan.blockedNote.includes("cannot restart or approve"));
+results.push({
+  name: "assistant plan blocked note keeps safety wording under tone formatting",
+  tonedRestartPlanBlockedNote: tonedRestartPlan.blockedNote,
 });
 
 console.log(JSON.stringify({ ok: true, cases: results }, null, 2));
