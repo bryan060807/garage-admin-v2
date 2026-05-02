@@ -2,6 +2,7 @@ import { Component, useEffect, useRef, useState } from "react";
 import { buildActionApprovalContext, evaluateApprovalFreshnessGate, formatApprovalFreshnessSummary } from "./actionApproval";
 import { formatActionTypeLabel, getActionRiskProfile, shouldShowActionApprovalPreview } from "./actionRisk";
 import { buildAssistantContext, buildAssistantRequestPayload } from "./assistantContext";
+import { ASSISTANT_LOOKUP_CHIPS, buildAssistantLookupInvocation, createAssistantSelection } from "./assistantLookup";
 import { buildDependencyHealthRollup, describeInventoryFreshness } from "./dependencyHealth";
 import { extractServiceDiagnosis } from "./diagnostics";
 
@@ -462,6 +463,210 @@ function formatDurationSeconds(value) {
   }
 
   return `${rounded}s`;
+}
+
+function lookupText(value) {
+  return String(value || "").trim();
+}
+
+function getLookupSafetyLabel(item) {
+  const status = lookupText(item?.safetyStatus).toLowerCase();
+
+  if (status === "blocked") {
+    return "Blocked";
+  }
+
+  if (status === "warning") {
+    return "Guarded";
+  }
+
+  return "Safe";
+}
+
+function formatLookupKindLabel(value) {
+  return lookupText(value)
+    .split(/[_-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function getLookupSafetyBadgeClass(item) {
+  const status = lookupText(item?.safetyStatus).toLowerCase();
+
+  if (status === "blocked") {
+    return "status-failed";
+  }
+
+  if (status === "warning") {
+    return "status-warning";
+  }
+
+  return "status-completed";
+}
+
+function getLookupPreviewText(item) {
+  const preview = lookupText(item?.preview);
+
+  if (preview) {
+    return preview;
+  }
+
+  return lookupText(item?.snippet);
+}
+
+function formatLookupMeta(item) {
+  const parts = [];
+
+  if (item?.sourceLabel) {
+    parts.push(item.sourceLabel);
+  }
+
+  if (item?.rootLabel) {
+    parts.push(`Root ${item.rootLabel}`);
+  }
+
+  if (item?.serviceName) {
+    parts.push(`Service ${item.serviceName}`);
+  }
+
+  if (item?.matchType) {
+    parts.push(`Match ${item.matchType}`);
+  }
+
+  if (item?.matchedLineCount != null && Number.isFinite(Number(item.matchedLineCount))) {
+    parts.push(`${Number(item.matchedLineCount)} matched`);
+  }
+
+  if (item?.updatedDate) {
+    parts.push(`Updated ${item.updatedDate}`);
+  }
+
+  if (item?.modifiedTime) {
+    parts.push(formatCreatedAt(item.modifiedTime));
+  }
+
+  if (item?.size != null) {
+    parts.push(formatBytes(item.size));
+  }
+
+  return parts.join(" · ");
+}
+
+function isLookupItemSelected(item, selection) {
+  if (!item || !selection) {
+    return false;
+  }
+
+  if (selection.reportId && item.reportId) {
+    return selection.reportId === item.reportId;
+  }
+
+  if (selection.path && item.path) {
+    return selection.path === item.path;
+  }
+
+  if (selection.serviceName && item.serviceName) {
+    return selection.serviceName === item.serviceName;
+  }
+
+  return false;
+}
+
+function canPreviewLookupItem(item) {
+  const kind = lookupText(item?.kind).toLowerCase();
+
+  if (kind === "report" || kind === "file") {
+    return Boolean(item?.reportId || item?.path);
+  }
+
+  return false;
+}
+
+function canExplainLookupItem(item) {
+  return Boolean(item?.reportId);
+}
+
+function AssistantLookupResults({ lookup, selection, onSelectItem, onPreviewItem, onExplainItem }) {
+  const items = normalizeObjectCollection(lookup?.items);
+
+  if (!items.length) {
+    return null;
+  }
+
+  return (
+    <div className="assistant-lookup-results">
+      {items.map((item) => {
+        const selected = isLookupItemSelected(item, selection);
+        const previewText = getLookupPreviewText(item);
+        const showPreviewAsBlock = lookupText(item?.kind).toLowerCase() === "log-preview" || lookupText(item?.kind).toLowerCase() === "file-preview";
+        const meta = formatLookupMeta(item);
+        const safetyLabel = getLookupSafetyLabel(item);
+        const canSelect = Boolean(item?.reportId || item?.path || item?.serviceName);
+
+        return (
+          <article
+            key={item.id || `${item.kind || "lookup"}-${item.title || item.relativePath || item.serviceName || "item"}`}
+            className={`assistant-lookup-card ${selected ? "assistant-lookup-card-selected" : ""} assistant-lookup-card-${
+              item.safetyStatus || "safe"
+            }`}
+          >
+            <div className="assistant-lookup-header">
+              <div className="assistant-lookup-heading">
+                <span className="detail-label">{formatLookupKindLabel(item.kind || "lookup")}</span>
+                <strong title={item.title || item.relativePath || item.serviceName}>
+                  {item.title || item.relativePath || item.serviceName || "Lookup result"}
+                </strong>
+              </div>
+              <div className="inline-badges assistant-lookup-badges">
+                <span className={`status-badge ${getLookupSafetyBadgeClass(item)}`}>{safetyLabel}</span>
+                {item.hostLabel ? <span className="status-badge status-info">{item.hostLabel}</span> : null}
+              </div>
+            </div>
+
+            {item.relativePath || item.path ? (
+              <div className="assistant-lookup-path" title={item.path || item.relativePath}>
+                {item.relativePath || item.path}
+              </div>
+            ) : null}
+
+            {meta ? <div className="assistant-lookup-meta">{meta}</div> : null}
+            {item.blockedReason ? <div className="known-failure assistant-lookup-blocked">{item.blockedReason}</div> : null}
+
+            {previewText ? (
+              showPreviewAsBlock ? (
+                <pre className="assistant-lookup-preview" tabIndex={0}>
+                  {previewText}
+                </pre>
+              ) : (
+                <div className="assistant-lookup-snippet">{previewText}</div>
+              )
+            ) : null}
+
+            {item.truncated ? <div className="inline-note assistant-lookup-truncated">Preview truncated by safety cap.</div> : null}
+
+            <div className="assistant-lookup-actions">
+              {canSelect ? (
+                <button type="button" className="mini-button" onClick={() => onSelectItem(item)}>
+                  {selected ? "Selected" : "Select"}
+                </button>
+              ) : null}
+              {canPreviewLookupItem(item) ? (
+                <button type="button" className="mini-button" onClick={() => onPreviewItem(item)}>
+                  Preview
+                </button>
+              ) : null}
+              {canExplainLookupItem(item) ? (
+                <button type="button" className="mini-button" onClick={() => onExplainItem(item)}>
+                  Explain
+                </button>
+              ) : null}
+            </div>
+          </article>
+        );
+      })}
+    </div>
+  );
 }
 
 function splitLogLine(line) {
@@ -2175,6 +2380,7 @@ export default function App() {
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState(null);
   const [messages, setMessages] = useState([]);
+  const [assistantSelection, setAssistantSelection] = useState(null);
   const [input, setInput] = useState("");
   const opsGridRef = useRef(null);
   const chatRequestIdRef = useRef(0);
@@ -3463,7 +3669,18 @@ export default function App() {
     setHealthDisposition({ type: "cleared", at: new Date().toISOString() });
   }
 
-  async function submitChatMessage(messageText) {
+  function appendAssistantContent(content) {
+    setMessages((current) => [
+      ...normalizeObjectCollection(current),
+      {
+        id: createId(),
+        role: "assistant",
+        content,
+      },
+    ]);
+  }
+
+  async function submitChatMessage(messageText, options = {}) {
     const trimmed = messageText.trim();
 
     if (!trimmed || chatLoading) {
@@ -3493,6 +3710,7 @@ export default function App() {
           buildAssistantRequestPayload({
             message: trimmed,
             context: assistantContext,
+            lookupRequest: options.lookupRequest || null,
           }),
         ),
       });
@@ -3507,6 +3725,12 @@ export default function App() {
         return;
       }
 
+      const lookupItems = normalizeObjectCollection(data.lookup?.items);
+
+      if (!assistantSelection && lookupItems.length === 1) {
+        setAssistantSelection(createAssistantSelection(lookupItems[0]));
+      }
+
       setMessages((current) => [
         ...normalizeObjectCollection(current),
         {
@@ -3515,6 +3739,7 @@ export default function App() {
           summary: data.summary,
           suggestions: data.suggestions || [],
           proposedAction: data.proposedAction || null,
+          lookup: data.lookup || null,
         },
       ]);
     } catch (error) {
@@ -3545,6 +3770,53 @@ export default function App() {
 
   function handleQuickPrompt(prompt) {
     submitChatMessage(prompt).catch(() => {});
+  }
+
+  function handleAssistantLookupAction(actionId, overrides = {}) {
+    const invocation = buildAssistantLookupInvocation(actionId, {
+      input,
+      selection: assistantSelection,
+      selectedService,
+      ...overrides,
+    });
+
+    if (invocation.error) {
+      setChatError(invocation.error);
+      appendAssistantContent(invocation.error);
+      return;
+    }
+
+    submitChatMessage(invocation.message, {
+      lookupRequest: invocation.lookupRequest,
+    }).catch(() => {});
+  }
+
+  function handleSelectAssistantItem(item) {
+    const selection = createAssistantSelection(item);
+
+    setAssistantSelection(selection);
+
+    if (!input.trim()) {
+      setInput(selection.relativePath || selection.title || selection.serviceName || "");
+    }
+  }
+
+  function handlePreviewAssistantItem(item) {
+    handleSelectAssistantItem(item);
+    handleAssistantLookupAction("read-file", {
+      title: item.title,
+      path: item.path,
+      reportId: item.reportId,
+    });
+  }
+
+  function handleExplainAssistantItem(item) {
+    handleSelectAssistantItem(item);
+    handleAssistantLookupAction("explain-report", {
+      title: item.title,
+      query: item.title,
+      reportId: item.reportId,
+    });
   }
 
   function applySuggestedAction(proposedAction) {
@@ -4769,6 +5041,24 @@ export default function App() {
                 </button>
               ))}
             </div>
+            <div className="assistant-lookup-chip-row">
+              {ASSISTANT_LOOKUP_CHIPS.map((chip) => (
+                <button
+                  key={chip.id}
+                  type="button"
+                  className="assistant-prompt-chip assistant-lookup-chip"
+                  onClick={() => handleAssistantLookupAction(chip.id)}
+                  disabled={chatLoading}
+                >
+                  {chip.label}
+                </button>
+              ))}
+            </div>
+            {assistantSelection ? (
+              <div className="inline-note assistant-selection-note">
+                Selected target: {assistantSelection.title || assistantSelection.relativePath || assistantSelection.serviceName || "None"}
+              </div>
+            ) : null}
           </div>
           {!chatMessages.length && !chatLoading ? (
             <div className="message system">Ask one of the quick prompts or type a question grounded in the selected service.</div>
@@ -4782,6 +5072,18 @@ export default function App() {
                     <span className="detail-label">Summary</span>
                     <div>{m.summary}</div>
                   </div>
+                  {m.lookup ? (
+                    <div>
+                      <span className="detail-label">Lookup Results</span>
+                      <AssistantLookupResults
+                        lookup={m.lookup}
+                        selection={assistantSelection}
+                        onSelectItem={handleSelectAssistantItem}
+                        onPreviewItem={handlePreviewAssistantItem}
+                        onExplainItem={handleExplainAssistantItem}
+                      />
+                    </div>
+                  ) : null}
                   <div>
                     <span className="detail-label">Suggestions</span>
                     <ul className="suggestion-list">
@@ -4816,7 +5118,7 @@ export default function App() {
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask about diagnosis, freshness, dependencies, logs, or host ownership..."
+            placeholder="Ask about diagnosis, logs, host ownership, reports, or safe file lookup..."
           />
           <button disabled={chatLoading}>{chatLoading ? "Analyzing..." : "Send"}</button>
         </form>

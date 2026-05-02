@@ -1,4 +1,5 @@
 const express = require("express");
+const assistantLookup = require("../lib/assistantLookup");
 
 const router = express.Router();
 
@@ -217,6 +218,411 @@ function detectIntent(message) {
   }
 
   return "default";
+}
+
+function normalizeLookupRequest(value) {
+  if (!isObject(value)) {
+    return null;
+  }
+
+  const type = cleanText(value.type).toLowerCase();
+
+  if (!type) {
+    return null;
+  }
+
+  return {
+    type,
+    query: cleanText(value.query),
+    path: cleanText(value.path),
+    reportId: cleanText(value.reportId),
+    service: cleanText(value.service),
+    filter: cleanText(value.filter),
+    searchContent: value.searchContent === true,
+    maxBytes: value.maxBytes,
+    lines: value.lines,
+    limit: value.limit,
+    rootLabels: Array.isArray(value.rootLabels)
+      ? value.rootLabels.map((entry) => cleanText(entry)).filter(Boolean)
+      : [],
+  };
+}
+
+function extractLookupMessageArgument(message, prefix) {
+  const text = cleanText(message);
+  const normalizedPrefix = cleanText(prefix).toLowerCase();
+
+  if (!text.toLowerCase().startsWith(normalizedPrefix)) {
+    return "";
+  }
+
+  return cleanText(text.slice(normalizedPrefix.length).replace(/^[:\s-]+/, ""));
+}
+
+function inferLookupRequestFromMessage(message, assistantContext) {
+  const context = toObject(assistantContext);
+  const serviceName = getServiceName(context);
+  const normalizedMessage = cleanText(message).toLowerCase();
+
+  if (normalizedMessage.startsWith("find report")) {
+    return {
+      type: "reports",
+      query: extractLookupMessageArgument(message, "find report"),
+    };
+  }
+
+  if (normalizedMessage.startsWith("search files")) {
+    return {
+      type: "search-files",
+      query: extractLookupMessageArgument(message, "search files") || serviceName,
+      searchContent: true,
+      limit: 12,
+    };
+  }
+
+  if (normalizedMessage.startsWith("open safe file preview")) {
+    return {
+      type: "read-file",
+      path: extractLookupMessageArgument(message, "open safe file preview"),
+      maxBytes: 12 * 1024,
+    };
+  }
+
+  if (normalizedMessage.startsWith("query logs")) {
+    return {
+      type: "logs-query",
+      service: serviceName,
+      filter: extractLookupMessageArgument(message, "query logs"),
+      lines: 40,
+    };
+  }
+
+  if (normalizedMessage.startsWith("explain this report")) {
+    return {
+      type: "explain-report",
+      query: extractLookupMessageArgument(message, "explain this report"),
+    };
+  }
+
+  return null;
+}
+
+function buildLookupPayload(type, result, extra = {}) {
+  return {
+    type,
+    count: Number(result?.count || 0),
+    query: cleanText(result?.query || extra.query),
+    filter: cleanText(result?.filter || extra.filter),
+    blocked: result?.blocked === true,
+    resultCapReached: result?.resultCapReached === true,
+    scanCapReached: result?.scanCapReached === true,
+    allowlistedRoots: Array.isArray(result?.allowlistedRoots) ? result.allowlistedRoots : [],
+    items: normalizeObjects(result?.items),
+  };
+}
+
+function buildLookupFailureResponse(type, result, extra = {}) {
+  const suggestions = [];
+
+  if (type === "read-file") {
+    pushSuggestion(suggestions, "Use a report or file result from the allowlisted lookup cards instead of guessing a path.");
+  }
+
+  if (type === "logs-query") {
+    pushSuggestion(suggestions, "For Fedora services, keep log review on the existing safe bridge/admin path rather than direct filesystem access.");
+  }
+
+  if (!suggestions.length) {
+    pushSuggestion(suggestions, "Stay inside the allowlisted Windows repo/docs roots and the existing safe Fedora APIs.");
+  }
+
+  return {
+    summary: result?.error || "The assistant lookup request failed.",
+    suggestions,
+    proposedAction: null,
+    lookup: buildLookupPayload(type, result, extra),
+  };
+}
+
+function buildLookupOriginSentence(item) {
+  const hostContext = cleanText(item?.hostContext).toLowerCase();
+
+  if (hostContext === "fedora") {
+    return "For Fedora service logs, use the existing admin/node-agent log path rather than direct filesystem access.";
+  }
+
+  if (hostContext === "cross-host" || hostContext === "docs") {
+    return "This is cross-host documentation, not direct Fedora filesystem access.";
+  }
+
+  return "This appears to be a Windows project file, not a Fedora control-plane file.";
+}
+
+function buildLookupSelectionSummary(item) {
+  const title = readText(item?.title, item?.relativePath, item?.serviceName, "selected item");
+
+  return `${title}. ${buildLookupOriginSentence(item)}`;
+}
+
+async function buildLookupResponse(message, assistantContext, lookupRequest) {
+  const normalizedRequest =
+    normalizeLookupRequest(lookupRequest) || inferLookupRequestFromMessage(message, assistantContext);
+
+  if (!normalizedRequest) {
+    return null;
+  }
+
+  if (normalizedRequest.type === "reports") {
+    const result = await assistantLookup.listReports({
+      query: normalizedRequest.query,
+    });
+
+    if (!result.ok) {
+      return buildLookupFailureResponse("reports", result, {
+        query: normalizedRequest.query,
+      });
+    }
+
+    const items = normalizeObjects(result.items);
+    const suggestions = [];
+    let summary = "No assistant reports are currently registered.";
+
+    if (items.length === 1) {
+      summary = `I found the ${items[0].title}.`;
+    } else if (items.length > 1) {
+      summary = `I found ${items.length} matching reports; here are the safest matches from the registry.`;
+    } else if (normalizedRequest.query) {
+      summary = `I did not find a registered report matching "${normalizedRequest.query}".`;
+    }
+
+    if (items.length) {
+      pushSuggestion(suggestions, "Open a safe preview for a selected report.");
+      pushSuggestion(suggestions, "Explain a selected report to connect it back to the current operator context.");
+    } else {
+      pushSuggestion(suggestions, "Try a broader report name such as Garage Admin, control-plane, TrackMaster, or ChordMaster.");
+    }
+
+    return {
+      summary,
+      suggestions,
+      proposedAction: null,
+      lookup: buildLookupPayload("reports", result, {
+        query: normalizedRequest.query,
+      }),
+    };
+  }
+
+  if (normalizedRequest.type === "search-files") {
+    const result = await assistantLookup.searchFiles({
+      query: normalizedRequest.query,
+      rootLabels: normalizedRequest.rootLabels,
+      searchContent: normalizedRequest.searchContent,
+      limit: normalizedRequest.limit,
+    });
+
+    if (!result.ok) {
+      return buildLookupFailureResponse("search-files", result, {
+        query: normalizedRequest.query,
+      });
+    }
+
+    const suggestions = [];
+    let summary;
+
+    if (Number(result.count || 0) === 0) {
+      summary = `I did not find matching files for "${normalizedRequest.query}" inside the allowlisted roots.`;
+      pushSuggestion(suggestions, "Try a broader filename or keyword.");
+      pushSuggestion(suggestions, "Use report lookup if you are looking for a named runbook or status document.");
+    } else {
+      const capNote =
+        result.resultCapReached || result.scanCapReached
+          ? " Result caps were applied to keep the scan bounded."
+          : "";
+      summary = `I found ${result.count} matching files; here are previews.${capNote}`;
+      pushSuggestion(suggestions, "Open a safe preview for a specific file match.");
+      pushSuggestion(suggestions, "If a result belongs to another Windows repo, treat it as local documentation rather than Fedora filesystem access.");
+    }
+
+    return {
+      summary,
+      suggestions,
+      proposedAction: null,
+      lookup: buildLookupPayload("search-files", result, {
+        query: normalizedRequest.query,
+      }),
+    };
+  }
+
+  if (normalizedRequest.type === "read-file") {
+    const result = await assistantLookup.readFilePreview({
+      path: normalizedRequest.path,
+      reportId: normalizedRequest.reportId,
+      maxBytes: normalizedRequest.maxBytes,
+    });
+
+    if (!result.ok) {
+      return buildLookupFailureResponse("read-file", result);
+    }
+
+    const item = normalizeObjects(result.items)[0] || null;
+    const suggestions = [];
+    let summary = "I opened a safe file preview.";
+
+    if (item) {
+      summary = `I opened a safe preview for ${buildLookupSelectionSummary(item)}${item.truncated ? " The preview is truncated." : ""}`;
+    }
+
+    pushSuggestion(suggestions, "Search nearby files if you need a narrower source.");
+
+    if (item?.reportId) {
+      pushSuggestion(suggestions, "Explain this report if you want a grounded summary before acting.");
+    }
+
+    return {
+      summary,
+      suggestions,
+      proposedAction: null,
+      lookup: buildLookupPayload("read-file", result),
+    };
+  }
+
+  if (normalizedRequest.type === "logs-query") {
+    const context = toObject(assistantContext);
+    const serviceName = readText(normalizedRequest.service, getServiceName(context));
+
+    if (!serviceName) {
+      return {
+        summary: "Select a service first so log lookup can stay grounded in the current host-aware context.",
+        suggestions: ["Select a service, then query logs through the safe Windows PM2 or Fedora bridge path."],
+        proposedAction: null,
+        lookup: {
+          type: "logs-query",
+          count: 0,
+          query: "",
+          filter: cleanText(normalizedRequest.filter),
+          blocked: true,
+          resultCapReached: false,
+          scanCapReached: false,
+          allowlistedRoots: [],
+          items: [],
+        },
+      };
+    }
+
+    const result = await assistantLookup.queryLogs({
+      service: serviceName,
+      lines: normalizedRequest.lines,
+      filter: normalizedRequest.filter,
+    });
+
+    if (!result.ok) {
+      return buildLookupFailureResponse("logs-query", result, {
+        filter: normalizedRequest.filter,
+      });
+    }
+
+    const item = normalizeObjects(result.items)[0] || null;
+    const suggestions = [];
+    let summary = `I fetched a capped read-only log preview for ${serviceName}.`;
+
+    if (item?.hostContext === "fedora") {
+      summary =
+        `I fetched a capped read-only log preview for ${serviceName}. ` +
+        "For Fedora service logs, use the existing admin/node-agent log path rather than direct filesystem access.";
+    } else if (item?.hostContext === "windows") {
+      summary = `I fetched a capped read-only Windows PM2 log preview for ${serviceName}.`;
+    }
+
+    if (cleanText(normalizedRequest.filter)) {
+      summary += ` Filter: ${cleanText(normalizedRequest.filter)}.`;
+    }
+
+    if (item?.truncated) {
+      summary += " The line cap was applied.";
+    }
+
+    pushSuggestion(suggestions, "Compare this output to the diagnosis card and the raw log summary before planning any restart.");
+    pushSuggestion(suggestions, "Keep log review read-only and host-aware.");
+
+    return {
+      summary,
+      suggestions,
+      proposedAction: null,
+      lookup: buildLookupPayload("logs-query", result, {
+        filter: normalizedRequest.filter,
+      }),
+    };
+  }
+
+  if (normalizedRequest.type === "explain-report") {
+    let reportResult = null;
+
+    if (normalizedRequest.reportId) {
+      reportResult = await assistantLookup.getReportDetail(normalizedRequest.reportId);
+    } else {
+      reportResult = await assistantLookup.listReports({
+        query: normalizedRequest.query,
+      });
+    }
+
+    if (!reportResult.ok) {
+      return buildLookupFailureResponse("explain-report", reportResult, {
+        query: normalizedRequest.query,
+      });
+    }
+
+    const reportItems = reportResult.item ? [reportResult.item] : normalizeObjects(reportResult.items);
+    const reportItem = reportItems[0] || null;
+
+    if (!reportItem) {
+      return {
+        summary: `I did not find a report to explain${normalizedRequest.query ? ` for "${normalizedRequest.query}"` : ""}.`,
+        suggestions: ["Find report first, then explain a specific runbook or status document."],
+        proposedAction: null,
+        lookup: buildLookupPayload("explain-report", {
+          count: 0,
+          items: [],
+          query: normalizedRequest.query,
+          allowlistedRoots: reportResult.allowlistedRoots,
+        }),
+      };
+    }
+
+    const previewResult = reportItem.reportId
+      ? await assistantLookup.readFilePreview({
+          reportId: reportItem.reportId,
+          maxBytes: 8 * 1024,
+        })
+      : null;
+    const lookupPayload =
+      previewResult && previewResult.ok
+        ? buildLookupPayload("explain-report", previewResult)
+        : buildLookupPayload("explain-report", {
+            count: 1,
+            items: [reportItem],
+            allowlistedRoots: reportResult.allowlistedRoots,
+          });
+    const suggestions = [];
+    let summary = `I found the ${reportItem.title}. ${reportItem.snippet || ""}`.trim();
+
+    summary = `${summary} ${buildLookupOriginSentence(reportItem)}`.trim();
+
+    if (previewResult && !previewResult.ok) {
+      summary += ` ${previewResult.error}`;
+    }
+
+    pushSuggestion(suggestions, "Use the safe preview card to inspect the document without leaving the chat panel.");
+    pushSuggestion(suggestions, "Treat cross-host docs as documentation of Fedora/Windows ownership, not live Fedora filesystem access.");
+
+    return {
+      summary,
+      suggestions,
+      proposedAction: null,
+      lookup: lookupPayload,
+    };
+  }
+
+  return null;
 }
 
 function formatHostLabel(host) {
@@ -730,7 +1136,13 @@ function buildDefaultResponse(context) {
   };
 }
 
-function buildGroundedResponse(message, assistantContext) {
+async function buildGroundedResponse(message, assistantContext, lookupRequest) {
+  const lookupResponse = await buildLookupResponse(message, assistantContext, lookupRequest);
+
+  if (lookupResponse) {
+    return lookupResponse;
+  }
+
   const context = toObject(assistantContext);
 
   if (!getServiceName(context)) {
@@ -782,20 +1194,21 @@ function buildGroundedResponse(message, assistantContext) {
 router.post(
   "/plan",
   asyncRoute(async (req, res) => {
-    const { message, serviceName, incident, logs, recentAudit, diagnosis, assistantContext } = req.body || {};
+    const { message, serviceName, incident, logs, recentAudit, diagnosis, assistantContext, lookupRequest } = req.body || {};
 
     if (!message || !cleanText(message)) {
       return res.status(400).json({ error: "message is required" });
     }
 
     if (isObject(assistantContext)) {
-      const response = buildGroundedResponse(message, assistantContext);
+      const response = await buildGroundedResponse(message, assistantContext, lookupRequest);
 
       return res.json({
         ok: true,
         summary: response.summary,
         suggestions: response.suggestions,
         proposedAction: response.proposedAction || null,
+        lookup: response.lookup || null,
       });
     }
 

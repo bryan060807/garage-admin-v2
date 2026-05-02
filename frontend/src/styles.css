@@ -2164,6 +2164,27 @@ button {
   cursor: not-allowed;
 }
 
+.status-info {
+  border: 1px solid rgba(125, 183, 224, 0.18);
+  color: #dce4ec;
+  background: rgba(125, 183, 224, 0.08);
+}
+
+.assistant-lookup-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.assistant-lookup-chip {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.assistant-selection-note {
+  border-left: 2px solid rgba(125, 183, 224, 0.28);
+  padding-left: 8px;
+}
+
 .messages {
   display: flex;
   min-height: 0;
@@ -2191,6 +2212,96 @@ button {
 
 .chat-summary {
   color: #edf2f7;
+}
+
+.assistant-lookup-results {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.assistant-lookup-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.assistant-lookup-card-selected {
+  border-color: rgba(125, 183, 224, 0.38);
+  box-shadow: 0 0 0 1px rgba(125, 183, 224, 0.08);
+}
+
+.assistant-lookup-card-warning {
+  border-color: rgba(224, 188, 125, 0.24);
+}
+
+.assistant-lookup-card-blocked {
+  border-color: rgba(224, 138, 125, 0.28);
+}
+
+.assistant-lookup-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.assistant-lookup-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.assistant-lookup-badges {
+  justify-content: flex-end;
+}
+
+.assistant-lookup-path,
+.assistant-lookup-meta {
+  font-size: 12px;
+  color: var(--text-soft);
+}
+
+.assistant-lookup-path {
+  word-break: break-all;
+}
+
+.assistant-lookup-snippet {
+  color: #dce4ec;
+  line-height: 1.45;
+}
+
+.assistant-lookup-preview {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--border-quiet);
+  border-radius: 10px;
+  padding: 9px 10px;
+  background: rgba(6, 12, 18, 0.72);
+  color: #dce4ec;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.assistant-lookup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.assistant-lookup-blocked {
+  margin: 0;
+}
+
+.assistant-lookup-truncated {
+  margin-top: -2px;
 }
 
 .suggestion-list {
