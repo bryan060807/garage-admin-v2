@@ -44,6 +44,8 @@ export const ASSISTANT_PROMPT_SCAFFOLD = Object.freeze({
     "Do not suggest unsupported cross-host actions.",
     "Do not suggest exposing bridge internals publicly.",
     "Do not ask the operator to paste secrets, tokens, passwords, or API keys.",
+    "Use assistant lookup only against allowlisted Windows repo/docs paths and existing safe Fedora log/status APIs.",
+    "Block env files, secrets, certificates, keys, credential files, dumps, binaries, and raw private logs from preview.",
     "For risky actions, route the operator through the existing approval and freshness-gated workflow.",
     "Preserve structured errors and explain them clearly.",
   ],
@@ -627,12 +629,39 @@ export function buildAssistantContext({
   return context;
 }
 
-export function buildAssistantRequestPayload({ message = "", context = null } = {}) {
+function sanitizeLookupRequest(value) {
+  if (!isObject(value)) {
+    return null;
+  }
+
+  const type = readText(value.type);
+
+  if (!type) {
+    return null;
+  }
+
+  return {
+    type,
+    query: readText(value.query),
+    path: readText(value.path),
+    reportId: readText(value.reportId),
+    service: readText(value.service),
+    filter: readText(value.filter),
+    searchContent: value.searchContent === true,
+    maxBytes: value.maxBytes,
+    lines: value.lines,
+    limit: value.limit,
+    rootLabels: normalizeStrings(value.rootLabels),
+  };
+}
+
+export function buildAssistantRequestPayload({ message = "", context = null, lookupRequest = null } = {}) {
   return {
     message: cleanText(message),
     serviceName: cleanText(context?.service?.name) || null,
     incident: context?.incident || null,
     assistantContext: context,
     promptScaffold: ASSISTANT_PROMPT_SCAFFOLD,
+    lookupRequest: sanitizeLookupRequest(lookupRequest),
   };
 }
