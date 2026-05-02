@@ -1432,6 +1432,62 @@ button {
   white-space: pre-wrap;
 }
 
+.approval-freshness-section {
+  margin-top: 12px;
+  border-top: 1px solid var(--border-quiet);
+  padding-top: 10px;
+}
+
+.approval-freshness-header {
+  margin-bottom: 8px;
+}
+
+.approval-freshness-row {
+  margin-top: 0;
+}
+
+.approval-freshness-sources {
+  margin-top: 6px;
+}
+
+.approval-freshness-service,
+.approval-freshness-dependencies {
+  margin-top: 10px;
+}
+
+.approval-freshness-note-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.approval-freshness-note {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.approval-gate-callout {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  padding: 10px;
+  color: var(--text-soft);
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 0.82rem;
+}
+
+.approval-gate-callout-caution {
+  border-color: rgba(246, 180, 64, 0.24);
+  background: rgba(246, 180, 64, 0.05);
+}
+
+.approval-gate-callout-dangerous {
+  border-color: rgba(184, 65, 65, 0.22);
+  background: rgba(184, 65, 65, 0.06);
+}
+
 .mini-button {
   min-height: 30px;
   border: 1px solid var(--border-soft);
@@ -1709,6 +1765,23 @@ button {
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 10px;
+}
+
+.approval-acknowledgement {
+  display: flex;
+  flex: 1 0 100%;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--text-soft);
+  font-size: 0.8rem;
+}
+
+.approval-acknowledgement input {
+  margin-top: 2px;
+}
+
+.approval-gate-note {
+  flex: 1 0 100%;
 }
 
 .audit-approval-preview {

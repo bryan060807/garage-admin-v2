@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 
+import { buildActionApprovalContext, evaluateApprovalFreshnessGate } from "../src/actionApproval.js";
 import { getActionRiskProfile, shouldShowActionApprovalPreview } from "../src/actionRisk.js";
 import {
   buildDependencyHealthRollup,
@@ -302,6 +303,21 @@ function buildDependencyRollupInventory() {
       },
     },
   );
+}
+
+function buildApprovalInventorySnapshot(overrides = {}) {
+  return {
+    checkedAt: "2026-05-01T11:59:20Z",
+    sources: {
+      windowsPm2: {
+        checkedAt: "2026-05-01T11:59:10Z",
+      },
+      fedoraBridge: {
+        checkedAt: "2026-05-01T11:55:00Z",
+      },
+    },
+    ...overrides,
+  };
 }
 
 const cases = [
@@ -674,6 +690,172 @@ for (const testCase of actionRiskCases) {
     actionRisk: testCase.profile?.riskLevel || "multi",
     actionApprovalPreview:
       typeof testCase.profile?.requiresApproval === "boolean" ? String(testCase.profile.requiresApproval) : "mixed",
+  });
+}
+
+const approvalFreshnessServices = patchService(
+  patchService(buildServiceInventory(), "trackmaster-ui", {
+    lastCheckedAt: "2026-05-01T11:59:30Z",
+    status: "online",
+  }),
+  "trackmaster-api",
+  {
+    lastCheckedAt: "2026-05-01T11:59:25Z",
+    status: "online",
+  },
+);
+const staleDependencyApprovalServices = patchService(approvalFreshnessServices, "trackmaster-api", {
+  lastCheckedAt: "2026-05-01T11:45:00Z",
+});
+
+const approvalFreshnessCases = [
+  {
+    name: "safe action has no freshness gate",
+    context: buildActionApprovalContext({
+      actionType: "fetch-logs",
+      actionMetadata: { input: { risk: "low", requiresApproval: false } },
+      service: findService(approvalFreshnessServices, "trackmaster-api"),
+      services: approvalFreshnessServices,
+      inventorySnapshot: buildApprovalInventorySnapshot({
+        checkedAt: "2026-05-01T11:59:30Z",
+      }),
+      riskContext: { supported: true },
+      now: FRESHNESS_NOW,
+    }),
+    verify(context) {
+      assert.equal(context.gate.policy, "none");
+      assert.equal(evaluateApprovalFreshnessGate(context).allowed, true);
+    },
+  },
+  {
+    name: "caution action with fresh inventory proceeds through existing approval",
+    context: buildActionApprovalContext({
+      actionType: "restart-service",
+      actionMetadata: { input: { risk: "medium", requiresApproval: true } },
+      service: findService(approvalFreshnessServices, "trackmaster-api"),
+      services: approvalFreshnessServices,
+      inventorySnapshot: buildApprovalInventorySnapshot({
+        checkedAt: "2026-05-01T11:59:35Z",
+      }),
+      riskContext: { supported: true },
+      now: FRESHNESS_NOW,
+    }),
+    verify(context) {
+      assert.equal(context.gate.policy, "existing-approval");
+      assert.equal(evaluateApprovalFreshnessGate(context).allowed, true);
+    },
+  },
+  {
+    name: "caution action with stale inventory requires stale-context acknowledgement",
+    context: buildActionApprovalContext({
+      actionType: "restart-service",
+      actionMetadata: { input: { risk: "medium", requiresApproval: true } },
+      service: findService(approvalFreshnessServices, "trackmaster-api"),
+      services: approvalFreshnessServices,
+      inventorySnapshot: buildApprovalInventorySnapshot({
+        checkedAt: "2026-05-01T11:45:00Z",
+      }),
+      riskContext: { supported: true },
+      now: FRESHNESS_NOW,
+    }),
+    verify(context) {
+      assert.equal(context.inventoryFreshness.bucket, "stale");
+      assert.equal(context.gate.policy, "acknowledge-stale-context");
+      assert.equal(evaluateApprovalFreshnessGate(context).allowed, false);
+      assert.equal(evaluateApprovalFreshnessGate(context, true).allowed, true);
+    },
+  },
+  {
+    name: "dangerous action with stale inventory is blocked until refresh",
+    context: buildActionApprovalContext({
+      actionType: "write-file",
+      actionMetadata: { input: { risk: "high", requiresApproval: true } },
+      service: findService(approvalFreshnessServices, "trackmaster-api"),
+      services: approvalFreshnessServices,
+      inventorySnapshot: buildApprovalInventorySnapshot({
+        checkedAt: "2026-05-01T11:48:00Z",
+      }),
+      riskContext: { supported: true },
+      now: FRESHNESS_NOW,
+    }),
+    verify(context) {
+      assert.equal(context.gate.policy, "refresh-required");
+      assert.equal(context.gate.blockedUntilRefresh, true);
+      assert.equal(evaluateApprovalFreshnessGate(context).allowed, false);
+      assert.ok(evaluateApprovalFreshnessGate(context).reason.includes("Refresh inventory"));
+    },
+  },
+  {
+    name: "unsupported action remains blocked regardless of freshness",
+    context: buildActionApprovalContext({
+      actionType: "restart-service",
+      actionMetadata: { input: { risk: "medium", requiresApproval: true } },
+      service: findService(approvalFreshnessServices, "trackmaster-api"),
+      services: approvalFreshnessServices,
+      inventorySnapshot: buildApprovalInventorySnapshot({
+        checkedAt: "2026-05-01T11:59:40Z",
+      }),
+      riskContext: { supported: false },
+      now: FRESHNESS_NOW,
+    }),
+    verify(context) {
+      assert.equal(context.gate.policy, "unsupported");
+      assert.equal(evaluateApprovalFreshnessGate(context).allowed, false);
+    },
+  },
+  {
+    name: "approval context includes inventory freshness and provenance",
+    context: buildActionApprovalContext({
+      actionType: "restart-service",
+      actionMetadata: { input: { risk: "medium", requiresApproval: true } },
+      service: findService(approvalFreshnessServices, "trackmaster-api"),
+      services: approvalFreshnessServices,
+      inventorySnapshot: buildApprovalInventorySnapshot({
+        checkedAt: "",
+        sources: {
+          windowsPm2: {
+            checkedAt: "2026-05-01T11:55:00Z",
+          },
+        },
+      }),
+      riskContext: { supported: true },
+      now: FRESHNESS_NOW,
+    }),
+    verify(context) {
+      assert.equal(context.inventoryFreshness.bucket, "aging");
+      assert.equal(context.inventoryFreshness.label, "Inventory aging");
+      assert.equal(context.inventoryFreshness.provenanceText, "Based on sources.windowsPm2.checkedAt");
+    },
+  },
+  {
+    name: "dependency stale context appears for approval previews when dependencies age out",
+    context: buildActionApprovalContext({
+      actionType: "restart-service",
+      actionMetadata: { input: { risk: "medium", requiresApproval: true } },
+      service: findService(staleDependencyApprovalServices, "trackmaster-ui"),
+      services: staleDependencyApprovalServices,
+      inventorySnapshot: buildApprovalInventorySnapshot({
+        checkedAt: "2026-05-01T11:59:45Z",
+      }),
+      riskContext: { supported: true },
+      now: FRESHNESS_NOW,
+    }),
+    verify(context) {
+      assert.ok(context.dependencyRollup);
+      assert.equal(context.dependencyRollup.freshnessSummary, "1 stale");
+      assert.ok(context.dependencyWarnings.includes("Dependency context may be stale."));
+      assert.ok(context.dependencyWarnings.includes("TrackMaster API status may be stale."));
+    },
+  },
+];
+
+for (const testCase of approvalFreshnessCases) {
+  testCase.verify(testCase.context);
+  results.push({
+    name: testCase.name,
+    approvalGate: testCase.context.gate.policy,
+    inventoryBucket: testCase.context.inventoryFreshness.bucket,
+    dependencyFreshness: testCase.context.dependencyRollup?.freshnessSummary || "none",
   });
 }
 

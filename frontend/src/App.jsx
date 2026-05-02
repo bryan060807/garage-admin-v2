@@ -1,4 +1,5 @@
 import { Component, useEffect, useRef, useState } from "react";
+import { buildActionApprovalContext, evaluateApprovalFreshnessGate, formatApprovalFreshnessSummary } from "./actionApproval";
 import { formatActionTypeLabel, getActionRiskProfile, shouldShowActionApprovalPreview } from "./actionRisk";
 import { buildDependencyHealthRollup, describeInventoryFreshness } from "./dependencyHealth";
 import { extractServiceDiagnosis } from "./diagnostics";
@@ -1973,6 +1974,163 @@ function isAuditEntryFresh(entry, now = Date.now()) {
   return now - createdAt <= AUDIT_FRESH_WINDOW_MS;
 }
 
+function approvalGateTone(policy) {
+  if (policy === "refresh-required" || policy === "unsupported") {
+    return "dangerous";
+  }
+
+  if (policy === "acknowledge-stale-context") {
+    return "caution";
+  }
+
+  return "unknown";
+}
+
+function ApprovalFreshnessSection({
+  approvalContext,
+  onRefreshInventory = null,
+  refreshBusy = false,
+  refreshError = "",
+}) {
+  const inventoryFreshness = approvalContext?.inventoryFreshness;
+  const serviceFreshness = approvalContext?.serviceFreshness;
+  const dependencyRollup = approvalContext?.dependencyRollup;
+  const dependencyWarnings = Array.isArray(approvalContext?.dependencyWarnings) ? approvalContext.dependencyWarnings : [];
+  const showSection = Boolean(
+    approvalContext &&
+      approvalContext.riskProfile?.riskLevel !== "safe" &&
+      inventoryFreshness &&
+      typeof inventoryFreshness === "object",
+  );
+
+  if (!showSection) {
+    return null;
+  }
+
+  const inventorySummary = formatApprovalFreshnessSummary(inventoryFreshness, inventoryFreshness.label);
+  const serviceFreshnessSummary = formatApprovalFreshnessSummary(serviceFreshness);
+  const showRefreshInventoryAction =
+    typeof onRefreshInventory === "function" &&
+    (inventoryFreshness.bucket === "stale" ||
+      inventoryFreshness.bucket === "unknown" ||
+      Boolean(inventoryFreshness.sourceHint));
+  const gateTone = approvalGateTone(approvalContext.gate?.policy);
+
+  return (
+    <div className="approval-freshness-section">
+      <div className="detail-header approval-freshness-header">
+        <span className="detail-label">Freshness context</span>
+        {showRefreshInventoryAction ? (
+          <button
+            type="button"
+            className="mini-button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onRefreshInventory(event);
+            }}
+            disabled={refreshBusy}
+          >
+            {refreshBusy ? "Refreshing..." : "Refresh Inventory"}
+          </button>
+        ) : null}
+      </div>
+
+      <div className="service-inventory-freshness approval-freshness-row">
+        <span
+          className={`signal-freshness-badge signal-freshness-badge-${inventoryFreshness.bucket}`}
+          title={inventorySummary || inventoryFreshness.title || inventoryFreshness.label}
+        >
+          {inventoryFreshness.label}
+        </span>
+        {inventoryFreshness.ageHint ? <span className="signal-freshness-summary">{inventoryFreshness.ageHint}</span> : null}
+        {inventoryFreshness.provenanceText ? (
+          <span className="service-inventory-provenance">{inventoryFreshness.provenanceText}</span>
+        ) : null}
+      </div>
+
+      <div
+        className="service-inventory-sources approval-freshness-sources"
+        title={
+          inventoryFreshness.sourceBreakdownTitle || inventoryFreshness.sourceBreakdownSummary || "Sources: unknown"
+        }
+      >
+        <span className="service-inventory-sources-label">Sources:</span>
+        {inventoryFreshness.sourceBreakdown.length ? (
+          inventoryFreshness.sourceBreakdown.map((source) => (
+            <span
+              key={source.key}
+              className={`signal-freshness-badge signal-freshness-badge-${source.bucket} service-inventory-source-chip`}
+              title={source.title || source.compactLabel}
+            >
+              {source.compactLabel}
+            </span>
+          ))
+        ) : (
+          <span className="service-inventory-sources-empty">unknown</span>
+        )}
+      </div>
+
+      {inventoryFreshness.sourceHint ? (
+        <div className="approval-freshness-note" title={inventoryFreshness.sourceHintTitle || inventoryFreshness.sourceHint}>
+          {inventoryFreshness.sourceHint}
+        </div>
+      ) : null}
+      {inventoryFreshness.hint ? <div className="approval-freshness-note">{inventoryFreshness.hint}</div> : null}
+
+      {serviceFreshness ? (
+        <div className="approval-freshness-service">
+          <span className="detail-label">Selected service freshness</span>
+          <div className="service-inventory-freshness approval-freshness-row">
+            <span
+              className={`signal-freshness-badge signal-freshness-badge-${serviceFreshness.bucket}`}
+              title={serviceFreshnessSummary || serviceFreshness.timestamp || serviceFreshness.label}
+            >
+              {serviceFreshness.label || "Unknown freshness"}
+            </span>
+            {serviceFreshness.ageLabel ? (
+              <span className="signal-freshness-summary">checked {serviceFreshness.ageLabel} ago</span>
+            ) : null}
+            {serviceFreshness.timestampSource ? (
+              <span className="service-inventory-provenance">Based on {serviceFreshness.timestampSource}</span>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {dependencyRollup ? (
+        <div className="approval-freshness-dependencies">
+          <span className="detail-label">Dependency freshness</span>
+          <div className="service-inventory-freshness approval-freshness-row">
+            <span className={`signal-freshness-badge signal-freshness-badge-${dependencyRollup.freshnessSummary.includes("stale") ? "stale" : dependencyRollup.freshnessSummary.includes("unknown") ? "unknown" : dependencyRollup.freshnessSummary.includes("aging") ? "aging" : "fresh"}`}>
+              {dependencyRollup.freshnessSummary}
+            </span>
+            <span className="signal-freshness-summary">
+              {dependencyRollup.declaredCount} dependenc{dependencyRollup.declaredCount === 1 ? "y" : "ies"} declared
+            </span>
+          </div>
+          {dependencyWarnings.length ? (
+            <div className="approval-freshness-note-list">
+              {dependencyWarnings.map((warning) => (
+                <div key={warning} className="approval-freshness-note">
+                  {warning}
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {approvalContext.gate?.message || approvalContext.gate?.refreshGuidance ? (
+        <div className={`approval-gate-callout approval-gate-callout-${gateTone}`}>
+          {approvalContext.gate?.message ? <div>{approvalContext.gate.message}</div> : null}
+          {approvalContext.gate?.refreshGuidance ? <div>{approvalContext.gate.refreshGuidance}</div> : null}
+        </div>
+      ) : null}
+      {refreshError ? <div className="error-text">Inventory refresh failed: {refreshError}</div> : null}
+    </div>
+  );
+}
+
 export default function App() {
   const [incidents, setIncidents] = useState([]);
   const [services, setServices] = useState([]);
@@ -2005,6 +2163,9 @@ export default function App() {
   const [restartSubmitting, setRestartSubmitting] = useState(false);
   const [restartResult, setRestartResult] = useState(null);
   const [restartError, setRestartError] = useState(null);
+  const [inventoryRefreshBusy, setInventoryRefreshBusy] = useState(false);
+  const [inventoryRefreshError, setInventoryRefreshError] = useState(null);
+  const [approvalFreshnessAcknowledgements, setApprovalFreshnessAcknowledgements] = useState({});
   const [actionBusyId, setActionBusyId] = useState(null);
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditError, setAuditError] = useState(null);
@@ -2228,6 +2389,33 @@ export default function App() {
     return applyServicePayload(servicesData);
   }
 
+  async function handleRefreshInventory(event) {
+    event?.stopPropagation?.();
+    setInventoryRefreshBusy(true);
+    setInventoryRefreshError(null);
+
+    try {
+      await refreshServices();
+    } catch (error) {
+      setInventoryRefreshError(error.message);
+    } finally {
+      setInventoryRefreshBusy(false);
+    }
+  }
+
+  function setApprovalFreshnessAcknowledged(actionId, checked) {
+    const key = String(actionId || "").trim();
+
+    if (!key) {
+      return;
+    }
+
+    setApprovalFreshnessAcknowledgements((current) => ({
+      ...current,
+      [key]: checked === true,
+    }));
+  }
+
   async function refreshAudit() {
     setAuditLoading(true);
     setAuditError(null);
@@ -2260,6 +2448,20 @@ export default function App() {
     services: serviceItems,
     now: Date.now(),
   });
+
+  function getApprovalContextForAction(actionType, actionRecord, serviceRecord, dependencyRollup = null) {
+    return buildActionApprovalContext({
+      actionType,
+      actionMetadata: actionRecord,
+      service: serviceRecord,
+      services: serviceItems,
+      inventorySnapshot: serviceInventorySnapshot,
+      inventoryFreshness: serviceInventoryFreshness,
+      dependencyRollup,
+      riskContext: getActionRiskContext(actionType, actionRecord, serviceRecord),
+      now: Date.now(),
+    });
+  }
 
   useEffect(() => {
     if (!selectedService) {
@@ -2409,6 +2611,7 @@ export default function App() {
       }
 
       setRestartResult(data);
+      setApprovalFreshnessAcknowledged(entry.id, false);
       await refreshAudit();
     } catch (error) {
       setRestartError(error.message);
@@ -2773,6 +2976,10 @@ export default function App() {
           restartDraftAction,
           getActionRiskContext("restart-service", restartDraftAction, selectedServiceRecord),
         )
+      : null;
+  const restartApprovalContext =
+    selectedServiceRecord && restartDraftAction
+      ? getApprovalContextForAction("restart-service", restartDraftAction, selectedServiceRecord)
       : null;
   const restartApprovalDetails =
     selectedServiceRecord && restartDraftAction && restartRiskProfile
@@ -4017,6 +4224,12 @@ export default function App() {
                       </div>
                     ))}
                   </div>
+                  <ApprovalFreshnessSection
+                    approvalContext={restartApprovalContext}
+                    onRefreshInventory={handleRefreshInventory}
+                    refreshBusy={inventoryRefreshBusy}
+                    refreshError={inventoryRefreshError}
+                  />
                 </div>
 
                 <DisclosureSection
@@ -4221,26 +4434,44 @@ export default function App() {
                       ? entry.input.reason
                       : "";
                   const auditServiceRecord = findServiceForAction(entry, serviceItems);
+                  const auditRiskContext = getActionRiskContext(entry.actionType, entry, auditServiceRecord);
                   const auditRiskProfile = getActionRiskProfile(
                     entry.actionType,
                     entry,
-                    getActionRiskContext(entry.actionType, entry, auditServiceRecord),
+                    auditRiskContext,
                   );
+                  const auditNeedsApprovalContext =
+                    entry.status === "pending" ||
+                    auditRiskProfile.riskLevel === "caution" ||
+                    auditRiskProfile.riskLevel === "dangerous";
+                  const auditApprovalContext = auditNeedsApprovalContext
+                    ? getApprovalContextForAction(entry.actionType, entry, auditServiceRecord)
+                    : null;
                   const auditReviewDetails = shouldShowActionApprovalPreview(
                     entry.actionType,
                     entry,
-                    getActionRiskContext(entry.actionType, entry, auditServiceRecord),
+                    auditRiskContext,
                   )
                     ? buildActionApprovalDetails(entry.actionType, entry, auditServiceRecord, {
                         riskProfile: auditRiskProfile,
                       })
                     : [];
+                  const auditFreshnessAcknowledged = Boolean(
+                    approvalFreshnessAcknowledgements[String(entry.id || "").trim()],
+                  );
+                  const auditApprovalDecision = auditApprovalContext
+                    ? evaluateApprovalFreshnessGate(auditApprovalContext, auditFreshnessAcknowledged)
+                    : { allowed: true, reason: "" };
                   const unsupportedRestart = getUnsupportedRestartMessage(entry.result);
                   const verification = getVerification(entry.result);
                   const formattedInput = formatAuditValue(entry.input) || "None";
                   const formattedResult = formatAuditValue(entry.result) || "None";
                   const auditSummary = getCompactAuditSummary(entry);
                   const actionBusy = actionBusyId === entry.id;
+                  const approveButtonDisabled =
+                    actionBusy ||
+                    !restartForm.approvedBy.trim() ||
+                    !auditApprovalDecision.allowed;
 
                   return (
                     <div
@@ -4289,14 +4520,41 @@ export default function App() {
 
                       {canApproveAction(entry) || canExecuteAction(entry) ? (
                         <div className="audit-actions">
+                          {canApproveAction(entry) && auditApprovalContext?.gate?.requiresAcknowledgement ? (
+                            <label
+                              className="approval-acknowledgement"
+                              onClick={(event) => event.stopPropagation()}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={auditFreshnessAcknowledged}
+                                onChange={(event) => setApprovalFreshnessAcknowledged(entry.id, event.target.checked)}
+                              />
+                              <span>{auditApprovalContext.gate.acknowledgementLabel}</span>
+                            </label>
+                          ) : null}
+                          {canApproveAction(entry) && auditApprovalDecision.reason ? (
+                            <div className="inline-note approval-gate-note">{auditApprovalDecision.reason}</div>
+                          ) : null}
                           {canApproveAction(entry) ? (
                             <button
                               type="button"
                               className="secondary-button"
                               onClick={(event) => approveAction(entry, event)}
-                              disabled={actionBusy || !restartForm.approvedBy.trim()}
+                              disabled={approveButtonDisabled}
+                              title={approveButtonDisabled && auditApprovalDecision.reason ? auditApprovalDecision.reason : undefined}
                             >
                               {actionBusy ? "Approving..." : "Approve"}
+                            </button>
+                          ) : null}
+                          {canApproveAction(entry) && auditApprovalContext?.gate?.blockedUntilRefresh ? (
+                            <button
+                              type="button"
+                              className="mini-button"
+                              onClick={handleRefreshInventory}
+                              disabled={inventoryRefreshBusy}
+                            >
+                              {inventoryRefreshBusy ? "Refreshing..." : "Refresh Inventory"}
                             </button>
                           ) : null}
                           {canExecuteAction(entry) ? (
@@ -4335,6 +4593,12 @@ export default function App() {
                                   </div>
                                 ))}
                               </div>
+                              <ApprovalFreshnessSection
+                                approvalContext={auditApprovalContext}
+                                onRefreshInventory={handleRefreshInventory}
+                                refreshBusy={inventoryRefreshBusy}
+                                refreshError={inventoryRefreshError}
+                              />
                             </div>
                           ) : null}
                           <div>
