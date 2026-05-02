@@ -1,6 +1,7 @@
 import { Component, useEffect, useRef, useState } from "react";
 import { buildActionApprovalContext, evaluateApprovalFreshnessGate, formatApprovalFreshnessSummary } from "./actionApproval";
 import { formatActionTypeLabel, getActionRiskProfile, shouldShowActionApprovalPreview } from "./actionRisk";
+import { buildAssistantContext, buildAssistantRequestPayload } from "./assistantContext";
 import { buildDependencyHealthRollup, describeInventoryFreshness } from "./dependencyHealth";
 import { extractServiceDiagnosis } from "./diagnostics";
 
@@ -2173,15 +2174,10 @@ export default function App() {
   const [expandedAuditIds, setExpandedAuditIds] = useState([]);
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState(null);
-  const [messages, setMessages] = useState([
-    {
-      id: "welcome",
-      role: "system",
-      content: "Garage Admin V2 connected. Select a service to view logs.",
-    },
-  ]);
+  const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const opsGridRef = useRef(null);
+  const chatRequestIdRef = useRef(0);
   const skipNextLayoutPersistenceRef = useRef(false);
   const [rightLayout, setRightLayout] = useState(loadInitialRightLayout);
   const [rightPanelResizing, setRightPanelResizing] = useState(false);
@@ -2546,6 +2542,14 @@ export default function App() {
     };
   }, [selectedService, selectedServiceRecord]);
 
+  useEffect(() => {
+    chatRequestIdRef.current += 1;
+    setMessages([]);
+    setInput("");
+    setChatError(null);
+    setChatLoading(false);
+  }, [selectedService]);
+
   function handleServiceSelect(serviceName) {
     setSelectedService(serviceName);
   }
@@ -2909,6 +2913,25 @@ export default function App() {
   const latestDiagnosisAction = actionMatchesService(restartResult, selectedService)
     ? restartResult
     : latestDiagnosisAudit;
+  const latestDiagnosisActionType = readServiceString(
+    latestDiagnosisAction?.action?.actionType,
+    latestDiagnosisAction?.actionType,
+    latestDiagnosisAction?.result?.actionType,
+  );
+  const latestDiagnosisActionRiskProfile =
+    latestDiagnosisAction && latestDiagnosisActionType
+      ? getActionRiskProfile(
+          latestDiagnosisActionType,
+          latestDiagnosisAction,
+          getActionRiskContext(latestDiagnosisActionType, latestDiagnosisAction, selectedServiceRecord),
+        )
+      : null;
+  const latestDiagnosisActionCreatedAt =
+    latestDiagnosisAction?.action?.createdAt ||
+    latestDiagnosisAction?.createdAt ||
+    latestDiagnosisAction?.result?.executedAt ||
+    latestDiagnosisAction?.result?.completedAt ||
+    null;
   const latestDiagnosisActionText = latestDiagnosisAction
     ? getActionResultSummary(latestDiagnosisAction) ||
       `${actionLabel(latestDiagnosisAction.action?.actionType || latestDiagnosisAction.actionType)} ${
@@ -3215,6 +3238,52 @@ export default function App() {
       ? diagnosis.likelyCause
       : "Review raw logs or run a health check for more context.";
   const dependencyHealthRollup = buildDependencyHealthRollup(selectedServiceRecord, serviceItems, diagnosis);
+  const assistantContext = buildAssistantContext({
+    selectedService,
+    selectedServiceRecord: selectedServiceRecord
+      ? {
+          ...selectedServiceRecord,
+          runtimeSummary: selectedServiceRuntimeSummary,
+        }
+      : null,
+    services: serviceItems,
+    diagnosis,
+    diagnosisLogEvents,
+    logSummary: {
+      hasLogs,
+      logsFetchedAt,
+      lineCount: logLineCount,
+      visibleLineCount: visibleLogLines.length,
+      filtered: hasActiveLogFilter,
+      alertOnly: logAlertOnly,
+      alertCount: logSignals.alertCount,
+      criticalCount: logSignals.critical,
+      errorCount: logSignals.errors,
+      warningCount: logSignals.warnings,
+      summary: logSignals.summary,
+    },
+    inventoryFreshness: serviceInventoryFreshness,
+    dependencyRollup: dependencyHealthRollup,
+    approvalContext: restartApprovalContext,
+    restartRiskProfile,
+    latestAction: latestDiagnosisAction
+      ? {
+          type: latestDiagnosisActionType,
+          status: latestDiagnosisAction.action?.status || latestDiagnosisAction.status || "unknown",
+          summary: latestDiagnosisActionText,
+          createdAt: latestDiagnosisActionCreatedAt,
+          riskLabel: latestDiagnosisActionRiskProfile?.label || "",
+          riskLevel: latestDiagnosisActionRiskProfile?.riskLevel || "",
+          verificationSummary: getVerificationSummary(getActionResult(latestDiagnosisAction)),
+        }
+      : null,
+    capabilities: {
+      logs: selectedServiceLogsCapability,
+      health: selectedServiceHealthCapability,
+      restart: selectedServiceRestartCapability,
+    },
+    selectedIncident,
+  });
   const extractedEventsEmptyMessage = !selectedService
     ? "Select a service to review extracted log events."
     : "No critical issue detected from the current logs. Review raw logs or run a health check for more context.";
@@ -3394,13 +3463,14 @@ export default function App() {
     setHealthDisposition({ type: "cleared", at: new Date().toISOString() });
   }
 
-  async function handleChatSubmit(event) {
-    event.preventDefault();
+  async function submitChatMessage(messageText) {
+    const trimmed = messageText.trim();
 
-    const trimmed = input.trim();
-    if (!trimmed) {
+    if (!trimmed || chatLoading) {
       return;
     }
+
+    const requestId = ++chatRequestIdRef.current;
 
     const userMessage = {
       id: createId(),
@@ -3419,30 +3489,22 @@ export default function App() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          message: trimmed,
-          serviceName: selectedService,
-          incident: selectedIncident,
-          logs: logs || "",
-          recentAudit: selectedService ? selectedServiceAudit.slice(0, 5) : visibleAudit.slice(0, 5),
-          diagnosis: diagnosis
-            ? {
-                primaryIssue: diagnosis.detected ? diagnosis.primaryIssue : null,
-                likelyCause: diagnosis.detected ? diagnosis.likelyCause : null,
-                suggestedActions: diagnosis.suggestedActions || [],
-                suggestedNextStep: diagnosis.suggestedNextStep || diagnosis.suggestedActions?.[0] || null,
-                severity: diagnosis.severity,
-                riskLevel: diagnosis.riskLevel,
-                confidence: diagnosis.confidence,
-              }
-            : null,
-        }),
+        body: JSON.stringify(
+          buildAssistantRequestPayload({
+            message: trimmed,
+            context: assistantContext,
+          }),
+        ),
       });
 
       const data = await response.json();
 
       if (!response.ok || !data.ok) {
         throw new Error(data.error || "Failed to analyze context");
+      }
+
+      if (requestId !== chatRequestIdRef.current) {
+        return;
       }
 
       setMessages((current) => [
@@ -3456,6 +3518,10 @@ export default function App() {
         },
       ]);
     } catch (error) {
+      if (requestId !== chatRequestIdRef.current) {
+        return;
+      }
+
       setChatError(error.message);
       setMessages((current) => [
         ...normalizeObjectCollection(current),
@@ -3466,8 +3532,19 @@ export default function App() {
         },
       ]);
     } finally {
-      setChatLoading(false);
+      if (requestId === chatRequestIdRef.current) {
+        setChatLoading(false);
+      }
     }
+  }
+
+  async function handleChatSubmit(event) {
+    event.preventDefault();
+    await submitChatMessage(input);
+  }
+
+  function handleQuickPrompt(prompt) {
+    submitChatMessage(prompt).catch(() => {});
   }
 
   function applySuggestedAction(proposedAction) {
@@ -4653,6 +4730,49 @@ export default function App() {
         </div>
         {chatError ? <div className="banner error-banner">Chat analysis failed: {chatError}</div> : null}
         <div className="messages">
+          <div className="assistant-context-card">
+            <div className="assistant-context-header">
+              <span className="detail-label">Grounded Context</span>
+              <span
+                className={`status-badge signal-freshness-badge signal-freshness-badge-${
+                  assistantContext.inventory.freshness.bucket || "unknown"
+                }`}
+                title={assistantContext.inventory.freshness.provenanceText || assistantContext.inventory.freshness.label}
+              >
+                {assistantContext.inventory.freshness.label}
+              </span>
+            </div>
+            <div className="assistant-context-summary">{assistantContext.openingMessage}</div>
+            {assistantContext.panelFacts.length ? (
+              <div className="assistant-context-facts">
+                {assistantContext.panelFacts.map((fact) => (
+                  <span
+                    key={fact.key}
+                    className={`assistant-context-fact assistant-context-fact-${fact.tone || "neutral"}`}
+                    title={`${fact.label}: ${fact.value}`}
+                  >
+                    <strong>{fact.label}:</strong> {fact.value}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            <div className="assistant-prompt-chips">
+              {assistantContext.quickPrompts.map((prompt) => (
+                <button
+                  key={prompt}
+                  type="button"
+                  className="assistant-prompt-chip"
+                  onClick={() => handleQuickPrompt(prompt)}
+                  disabled={chatLoading || !selectedService}
+                >
+                  {prompt}
+                </button>
+              ))}
+            </div>
+          </div>
+          {!chatMessages.length && !chatLoading ? (
+            <div className="message system">Ask one of the quick prompts or type a question grounded in the selected service.</div>
+          ) : null}
           {chatMessages.map((m) => (
             <div key={m.id} className={`message ${m.role}`}>
               {m.content ? <div>{m.content}</div> : null}
@@ -4696,7 +4816,7 @@ export default function App() {
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask for context analysis or next-step suggestions..."
+            placeholder="Ask about diagnosis, freshness, dependencies, logs, or host ownership..."
           />
           <button disabled={chatLoading}>{chatLoading ? "Analyzing..." : "Send"}</button>
         </form>

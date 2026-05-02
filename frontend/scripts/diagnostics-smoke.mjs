@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 import { buildActionApprovalContext, evaluateApprovalFreshnessGate } from "../src/actionApproval.js";
+import { buildAssistantContext, buildAssistantRequestPayload } from "../src/assistantContext.js";
 import { getActionRiskProfile, shouldShowActionApprovalPreview } from "../src/actionRisk.js";
 import {
   buildDependencyHealthRollup,
@@ -1251,5 +1252,205 @@ for (const testCase of dependencyRollupCases) {
     dependencyFreshnessSummary: rollup?.freshnessSummary || "none",
   });
 }
+
+const assistantInventorySnapshot = buildApprovalInventorySnapshot({
+  sources: {
+    windowsPm2: {
+      displayName: "Windows PM2",
+      checkedAt: "2026-05-01T11:59:10Z",
+    },
+    fedoraBridge: {
+      displayName: "Fedora Bridge",
+      checkedAt: "2026-05-01T11:45:00Z",
+    },
+  },
+});
+const assistantServices = patchService(buildDependencyRollupInventory(), "admin-proxy", {
+  runtime: {
+    checkedAt: "2026-05-01T11:45:00Z",
+  },
+});
+const garageAdminService = findService(assistantServices, "garage-admin-v2");
+const adminProxyService = findService(assistantServices, "admin-proxy");
+const assistantLogs = "2026-04-30T12:09:20Z GET /admin/health HTTP 502 Bad Gateway";
+const assistantDiagnosis = extractServiceDiagnosis(
+  buildGarageAdminContext({
+    services: assistantServices,
+    logs: assistantLogs,
+  }),
+);
+const assistantEvents = extractServiceLogEvents(
+  buildGarageAdminContext({
+    services: assistantServices,
+    logs: assistantLogs,
+  }),
+);
+const assistantInventoryFreshness = describeInventoryFreshness(assistantInventorySnapshot, {
+  services: assistantServices,
+  now: FRESHNESS_NOW,
+});
+const assistantDependencyRollup = buildDependencyHealthRollup(
+  garageAdminService,
+  assistantServices,
+  assistantDiagnosis,
+  { now: FRESHNESS_NOW },
+);
+const assistantApprovalContext = buildActionApprovalContext({
+  actionType: "restart-service",
+  actionMetadata: {
+    actionType: "restart-service",
+    target: "garage-admin-v2",
+    input: {
+      serviceName: "garage-admin-v2",
+    },
+  },
+  service: garageAdminService,
+  services: assistantServices,
+  inventorySnapshot: assistantInventorySnapshot,
+  inventoryFreshness: assistantInventoryFreshness,
+  dependencyRollup: assistantDependencyRollup,
+  now: FRESHNESS_NOW,
+});
+const assistantRestartRiskProfile = getActionRiskProfile("restart-service");
+
+const assistantContextCases = [
+  {
+    name: "assistant context summarizes stale fedora inventory without raw log dump",
+    context: buildAssistantContext({
+      selectedService: "garage-admin-v2",
+      selectedServiceRecord: {
+        ...garageAdminService,
+        runtimeSummary: "PM2 online",
+      },
+      services: assistantServices,
+      diagnosis: assistantDiagnosis,
+      diagnosisLogEvents: assistantEvents,
+      logSummary: {
+        hasLogs: true,
+        logsFetchedAt: "2026-05-01T11:59:40Z",
+        lineCount: 1,
+        visibleLineCount: 1,
+        filtered: false,
+        alertOnly: false,
+        alertCount: 1,
+        criticalCount: 0,
+        errorCount: 1,
+        warningCount: 0,
+        summary: "1 log alert",
+      },
+      inventoryFreshness: assistantInventoryFreshness,
+      dependencyRollup: assistantDependencyRollup,
+      approvalContext: assistantApprovalContext,
+      restartRiskProfile: assistantRestartRiskProfile,
+      latestAction: {
+        type: "restart-service",
+        status: "failed",
+        summary: "Action failed.",
+      },
+      capabilities: {
+        logs: {
+          supported: true,
+          executor: "windows-local",
+        },
+        health: {
+          supported: true,
+          mode: "http",
+        },
+        restart: {
+          supported: true,
+        },
+      },
+      selectedIncident: {
+        id: "incident-1",
+        title: "Garage admin bridge errors",
+        status: "open",
+        severity: "warning",
+        serviceName: "garage-admin-v2",
+      },
+    }),
+    verify(context) {
+      assert.equal(context.service.host, "windows");
+      assert.equal(context.ownership.currentHostLabel, "Windows runtime");
+      assert.equal(context.rawLogSummary.lineCount, 1);
+      assert.equal(context.rawLogSummary.summary, "1 log alert");
+      assert.ok(!("logs" in context.rawLogSummary));
+      assert.ok(context.openingMessage.includes("Garage Admin V2 is selected."));
+      assert.ok(context.openingMessage.includes("Fedora Bridge inventory is stale."));
+      assert.equal(context.diagnosis.relatedServiceId, "admin-proxy");
+      assert.ok(context.inventory.staleOrUnknownSources.some((source) => source.displayLabel === "Fedora Bridge"));
+      assert.equal(context.relationships.dependencies[0].serviceId, "admin-proxy");
+    },
+  },
+  {
+    name: "assistant context marks fedora host ownership for control-plane service",
+    context: buildAssistantContext({
+      selectedService: "admin-proxy",
+      selectedServiceRecord: adminProxyService,
+      services: assistantServices,
+      diagnosis: null,
+      diagnosisLogEvents: [],
+      logSummary: {
+        hasLogs: false,
+        lineCount: 0,
+        visibleLineCount: 0,
+        alertCount: 0,
+        summary: "No log alerts in current output.",
+      },
+      inventoryFreshness: assistantInventoryFreshness,
+      dependencyRollup: null,
+      approvalContext: null,
+      restartRiskProfile: null,
+      latestAction: null,
+      capabilities: {
+        logs: {
+          supported: true,
+          executor: "fedora-bridge",
+        },
+        health: {
+          supported: true,
+          mode: "bridge-health",
+        },
+        restart: {
+          supported: false,
+          reason: "Unsupported for Fedora control-plane services.",
+        },
+      },
+    }),
+    verify(context) {
+      assert.equal(context.service.host, "fedora");
+      assert.equal(context.ownership.currentHostLabel, "Fedora control plane");
+      assert.ok(context.openingMessage.includes("Admin Proxy is selected."));
+      assert.equal(context.capabilities.restart.supported, false);
+    },
+  },
+];
+
+for (const testCase of assistantContextCases) {
+  testCase.verify(testCase.context);
+  results.push({
+    name: testCase.name,
+    assistantContextService: testCase.context.service.name || "none",
+    assistantContextHost: testCase.context.service.host || "unknown",
+    assistantContextInventoryBucket: testCase.context.inventory.freshness.bucket,
+    assistantContextDependencyCount: testCase.context.relationships.dependencySummary.declaredCount,
+  });
+}
+
+const assistantRequestPayload = buildAssistantRequestPayload({
+  message: "Prepare restart plan",
+  context: assistantContextCases[0].context,
+});
+
+assert.equal(assistantRequestPayload.message, "Prepare restart plan");
+assert.equal(assistantRequestPayload.serviceName, "garage-admin-v2");
+assert.ok(Array.isArray(assistantRequestPayload.promptScaffold.groundingRules));
+assert.ok(Array.isArray(assistantRequestPayload.promptScaffold.operatorRules));
+assert.ok(!Object.prototype.hasOwnProperty.call(assistantRequestPayload, "logs"));
+results.push({
+  name: "assistant request payload stays sanitized",
+  assistantRequestHasContext: Boolean(assistantRequestPayload.assistantContext),
+  assistantRequestHasLogsField: Object.prototype.hasOwnProperty.call(assistantRequestPayload, "logs"),
+  assistantRequestGroundingRules: assistantRequestPayload.promptScaffold.groundingRules.length,
+});
 
 console.log(JSON.stringify({ ok: true, cases: results }, null, 2));

@@ -2068,6 +2068,102 @@ button {
   border-bottom: 1px solid var(--border-quiet);
 }
 
+.assistant-context-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: 1px solid rgba(125, 183, 224, 0.14);
+  border-radius: 12px;
+  padding: 11px;
+  background:
+    linear-gradient(180deg, rgba(125, 183, 224, 0.08), rgba(125, 183, 224, 0.03)),
+    rgba(8, 16, 24, 0.55);
+}
+
+.assistant-context-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.assistant-context-summary {
+  color: #edf2f7;
+  line-height: 1.45;
+}
+
+.assistant-context-facts,
+.assistant-prompt-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.assistant-context-fact {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  padding: 4px 9px;
+  color: var(--text-soft);
+  background: rgba(12, 20, 31, 0.55);
+}
+
+.assistant-context-fact strong {
+  color: #edf2f7;
+  font-weight: 600;
+}
+
+.assistant-context-fact-warning,
+.assistant-context-fact-warning strong,
+.assistant-context-fact-failed,
+.assistant-context-fact-failed strong,
+.assistant-context-fact-critical,
+.assistant-context-fact-critical strong,
+.assistant-context-fact-stale,
+.assistant-context-fact-stale strong {
+  color: #fbd38d;
+}
+
+.assistant-context-fact-windows,
+.assistant-context-fact-windows strong,
+.assistant-context-fact-fresh,
+.assistant-context-fact-fresh strong,
+.assistant-context-fact-running,
+.assistant-context-fact-running strong,
+.assistant-context-fact-completed,
+.assistant-context-fact-completed strong {
+  color: #9ae6b4;
+}
+
+.assistant-context-fact-fedora,
+.assistant-context-fact-fedora strong,
+.assistant-context-fact-aging,
+.assistant-context-fact-aging strong,
+.assistant-context-fact-approved,
+.assistant-context-fact-approved strong {
+  color: #90cdf4;
+}
+
+.assistant-prompt-chip {
+  border: 1px solid rgba(125, 183, 224, 0.16);
+  border-radius: 999px;
+  padding: 6px 10px;
+  color: #dce4ec;
+  background: rgba(125, 183, 224, 0.06);
+}
+
+.assistant-prompt-chip:hover:not(:disabled) {
+  border-color: rgba(125, 183, 224, 0.28);
+  background: rgba(125, 183, 224, 0.12);
+}
+
+.assistant-prompt-chip:disabled {
+  opacity: 0.56;
+  cursor: not-allowed;
+}
+
 .messages {
   display: flex;
   min-height: 0;
