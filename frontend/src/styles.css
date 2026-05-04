@@ -3096,13 +3096,19 @@ button {
   gap: 0.85rem;
 }
 
-.worker-evidence-controls,
-.worker-evidence-actions,
-.worker-evidence-summary {
+.worker-evidence-toolbar,
+.worker-evidence-summary,
+.worker-capability-chip-row,
+.worker-job-grid,
+.worker-job-feed {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
   align-items: center;
+}
+
+.worker-evidence-toolbar {
+  justify-content: space-between;
 }
 
 .worker-evidence-select-label {
@@ -3113,30 +3119,124 @@ button {
 }
 
 .worker-evidence-select {
-  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.3));
+  min-height: 36px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
   border-radius: 0.75rem;
-  padding: 0.45rem 0.6rem;
-  background: var(--surface-raised, #ffffff);
+  padding: 0.45rem 0.65rem;
+  background: rgba(255, 255, 255, 0.04);
   color: inherit;
 }
 
-.worker-evidence-result {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
+.worker-summary-grid {
+  display: grid;
+  gap: 0.85rem;
 }
 
-.worker-evidence-json {
-  max-height: 260px;
-  overflow: auto;
+.worker-summary-main,
+.worker-evidence-record,
+.worker-job-card {
+  border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 0.85rem;
-  padding: 0.75rem;
-  font-size: 0.78rem;
-  line-height: 1.45;
-  background: rgba(15, 23, 42, 0.06);
-  border: 1px solid rgba(148, 163, 184, 0.25);
-  white-space: pre-wrap;
-  word-break: break-word;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.worker-summary-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: 0.9rem;
+}
+
+.worker-summary-detail-grid,
+.worker-evidence-record-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 0.6rem 0.75rem;
+}
+
+.worker-capability-chip-row {
+  align-items: flex-start;
+}
+
+.worker-capability-chip-row-feed {
+  margin-top: 0.1rem;
+}
+
+.worker-capability-chip {
+  max-width: 100%;
+  white-space: normal;
+  text-align: left;
+}
+
+.worker-job-grid {
+  align-items: stretch;
+}
+
+.worker-job-feed {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.75rem;
+  width: 100%;
+}
+
+.worker-job-card {
+  flex: 1 1 220px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.45rem;
+  padding: 0.85rem;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+}
+
+.worker-job-card:hover:not(:disabled) {
+  border-color: rgba(125, 183, 224, 0.28);
+  background: rgba(125, 183, 224, 0.08);
+}
+
+.worker-job-card:disabled {
+  opacity: 0.62;
+  cursor: not-allowed;
+}
+
+.worker-job-card-copy,
+.worker-evidence-feed-copy,
+.worker-evidence-record-copy,
+.worker-evidence-record-error {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.86rem;
+}
+
+.worker-evidence-feed {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.worker-evidence-feed-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.worker-evidence-record {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.9rem;
+}
+
+.worker-evidence-record-error {
+  color: #ffb6b6;
+}
+
+.worker-unavailable-note {
+  margin: 0;
 }
 
 .worker-evidence-error {

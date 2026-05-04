@@ -2514,6 +2514,222 @@ function getHealthStatusSummary(healthResult) {
   return `${healthResult.ok ? "OK" : "Attention"}${healthResult.status ? ` Â· HTTP ${healthResult.status}` : ""}`;
 }
 
+function createWorkerEvidenceSnapshot() {
+  return {
+    health: null,
+    capabilities: null,
+    jobResults: [],
+    lastCheckedAt: null,
+    lastJobAt: null,
+  };
+}
+
+function getWorkerRegistrySource(worker) {
+  return readServiceString(worker?.registrySource, worker?.baseRouteSource, worker?.source, "built-in worker registry");
+}
+
+function formatWorkerTaskLabel(taskType) {
+  const normalized = String(taskType || "").trim().toLowerCase();
+
+  if (normalized === "health") {
+    return "Check worker health";
+  }
+
+  if (normalized === "capabilities") {
+    return "Load capabilities";
+  }
+
+  if (normalized === "ping_url") {
+    return "Check Garage Admin health";
+  }
+
+  if (normalized === "pm2_jlist") {
+    return "Fetch PM2 status";
+  }
+
+  return formatStatusLabel(normalized);
+}
+
+function formatWorkerStatusValue(value) {
+  const text = String(value || "").trim();
+
+  if (!text) {
+    return "";
+  }
+
+  if (/^\d+$/.test(text)) {
+    return `HTTP ${text}`;
+  }
+
+  return formatBadgeLabel(text);
+}
+
+function normalizeWorkerError(payload, fallbackCode = "worker_request_failed", fallbackMessage = "Worker request failed.") {
+  const data = toPlainObject(payload);
+  const errorCode = readServiceString(data.errorCode, data.code, fallbackCode);
+  const message = readServiceString(data.error, data.message, fallbackMessage);
+
+  return {
+    code: errorCode || fallbackCode,
+    message: message || fallbackMessage,
+  };
+}
+
+function normalizeWorkerCapabilityEntry(entry, keyHint = "") {
+  if (entry == null) {
+    return null;
+  }
+
+  if (typeof entry === "string") {
+    const label = String(entry).trim();
+
+    return label
+      ? {
+          key: label.toLowerCase(),
+          label,
+          detail: "",
+          supported: true,
+        }
+      : null;
+  }
+
+  if (typeof entry === "boolean") {
+    const label = String(keyHint || "").trim();
+
+    return label
+      ? {
+          key: label.toLowerCase(),
+          label,
+          detail: "",
+          supported: entry,
+        }
+      : null;
+  }
+
+  const item = toPlainObject(entry);
+  const label = readServiceString(item.label, item.name, item.taskType, item.id, keyHint);
+
+  if (!label) {
+    return null;
+  }
+
+  const detail = readServiceString(item.description, item.reason, item.setupHint, item.mode, item.executor, item.target, item.url);
+
+  return {
+    key: `${label.toLowerCase()}-${detail.toLowerCase()}`,
+    label,
+    detail,
+    supported: item.supported !== false && item.available !== false && item.enabled !== false && item.ok !== false,
+  };
+}
+
+function extractWorkerCapabilityEntries(payload) {
+  const candidates = [
+    payload,
+    payload?.capabilities,
+    payload?.items,
+    payload?.data,
+    payload?.supportedTasks,
+    payload?.tasks,
+  ];
+
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) {
+      return candidate.map((entry) => normalizeWorkerCapabilityEntry(entry)).filter(Boolean);
+    }
+
+    if (isPlainObject(candidate)) {
+      const entries = Object.entries(candidate)
+        .map(([key, value]) => normalizeWorkerCapabilityEntry(value, key))
+        .filter(Boolean);
+
+      if (entries.length) {
+        return entries;
+      }
+    }
+  }
+
+  return [];
+}
+
+function summarizeWorkerHealthResult(result) {
+  if (!result) {
+    return "Not checked yet.";
+  }
+
+  if (result.ok === false) {
+    return readServiceString(result.error, result.message, "Health check failed.");
+  }
+
+  const parts = [];
+  const status = formatWorkerStatusValue(result.status || result.state);
+
+  if (status) {
+    parts.push(status);
+  }
+
+  const message = readServiceString(result.message, result.summary, result.detail);
+
+  if (message) {
+    parts.push(message);
+  }
+
+  return parts.length ? parts.join(" Â· ") : "Healthy.";
+}
+
+function summarizeWorkerJobResult(result, taskType) {
+  if (!result) {
+    return {
+      outcome: "Not run yet.",
+      detail: "",
+    };
+  }
+
+  if (result.ok === false) {
+    return {
+      outcome: readServiceString(result.errorCode, "worker_request_failed"),
+      detail: readServiceString(result.error, result.message, "Job failed."),
+    };
+  }
+
+  const outcome = readServiceString(result.message, result.summary, result.status, "Completed.");
+  const detail = readServiceString(result.result, result.output, result.detail, formatWorkerTaskLabel(taskType));
+
+  return {
+    outcome,
+    detail,
+  };
+}
+
+function summarizeWorkerCapabilities(entries) {
+  const list = Array.isArray(entries) ? entries : [];
+  const supportedCount = list.filter((entry) => entry.supported !== false).length;
+
+  return {
+    count: list.length,
+    supportedCount,
+    preview: list.slice(0, 6),
+  };
+}
+
+function supportsSafePm2Task(entries) {
+  return Array.isArray(entries) && entries.some((entry) => /pm2[_-\s]?jlist/i.test(`${entry.key || ""} ${entry.label || ""} ${entry.detail || ""}`));
+}
+
+function getWorkerStateLine(worker) {
+  const parts = [];
+
+  if (worker?.host) {
+    parts.push(worker.host);
+  }
+
+  if (worker?.role) {
+    parts.push(worker.role);
+  }
+
+  return parts.join(" · ");
+}
+
 function getRestartConfirmationText(restartSupported) {
   return restartSupported
     ? "Operator approval is required before execution; verify the target service, host, impact, and rollback note first."
@@ -2765,15 +2981,313 @@ function ApprovalFreshnessSection({
 function WorkerEvidencePanel() {
   const [workers, setWorkers] = useState([]);
   const [selectedWorkerId, setSelectedWorkerId] = useState("");
-  const [latestResult, setLatestResult] = useState(null);
+  const [workerEvidence, setWorkerEvidence] = useState({});
+  const [workerRegistryCheckedAt, setWorkerRegistryCheckedAt] = useState(null);
   const [loadingAction, setLoadingAction] = useState("");
-  const [error, setError] = useState("");
+  const [error, setError] = useState(null);
 
-  const selectedWorker = workers.find((worker) => worker.id === selectedWorkerId) || workers[0] || null;
+  const selectedWorker =
+    workers.find((worker) => worker.id === selectedWorkerId) ||
+    workers.find((worker) => worker.id === "windows-runtime") ||
+    workers[0] ||
+    null;
+  const selectedWorkerEvidence = selectedWorker ? workerEvidence[selectedWorker.id] || createWorkerEvidenceSnapshot() : createWorkerEvidenceSnapshot();
+  const selectedWorkerCapabilities = Array.isArray(selectedWorkerEvidence.capabilities?.entries)
+    ? selectedWorkerEvidence.capabilities.entries
+    : [];
+  const selectedWorkerCapabilitySummary = summarizeWorkerCapabilities(selectedWorkerCapabilities);
+  const selectedWorkerHasPm2Task = supportsSafePm2Task(selectedWorkerCapabilities);
+  const selectedWorkerHealthSummary = selectedWorkerEvidence.health?.summary || "Not checked yet.";
+  const selectedWorkerHealthLabel = selectedWorkerEvidence.health
+    ? selectedWorkerEvidence.health.ok
+      ? "healthy"
+      : "attention"
+    : "not checked";
+  const selectedWorkerLastCheckedAt = selectedWorkerEvidence.lastCheckedAt || workerRegistryCheckedAt || null;
+  const selectedWorkerLastJobAt = selectedWorkerEvidence.lastJobAt || null;
+  const windowsWorkerMissing = !workers.some((worker) => worker.id === "windows-runtime");
+  const workerUnavailableMessage = windowsWorkerMissing
+    ? "Windows runtime worker is not currently registered. It may be stopped or its registry entry may be missing."
+    : selectedWorker && !selectedWorker.authConfigured
+      ? "Windows runtime worker may be stopped or token/config may be missing."
+      : "";
+
+  function updateWorkerEvidence(workerId, updater) {
+    setWorkerEvidence((previous) => {
+      const current = previous[workerId] || createWorkerEvidenceSnapshot();
+      const next = updater(current) || current;
+
+      return {
+        ...previous,
+        [workerId]: next,
+      };
+    });
+  }
+
+  async function callWorkerRoute(worker, path, options = {}) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), options.timeoutMs || 12000);
+
+    try {
+      const response = await fetch(`/api/workers/${worker.id}${path}`, {
+        method: options.method || "GET",
+        headers: options.body
+          ? {
+              "Content-Type": "application/json",
+            }
+          : undefined,
+        body: options.body ? JSON.stringify(options.body) : undefined,
+        signal: controller.signal,
+      });
+
+      const data = await response.json().catch(() => null);
+
+      if (data == null) {
+        return {
+          ok: false,
+          error: {
+            code: "invalid_worker_response",
+            message: "Worker did not return JSON.",
+          },
+        };
+      }
+
+      const responseData = toPlainObject(data);
+
+      if (!response.ok || responseData.ok === false) {
+        return {
+          ok: false,
+          data: responseData,
+          error: normalizeWorkerError(
+            responseData.result || responseData,
+            responseData.result?.errorCode || responseData.errorCode || `http_${response.status}`,
+            responseData.result?.error || responseData.error || `${path} failed.`,
+          ),
+        };
+      }
+
+      return {
+        ok: true,
+        data: responseData,
+      };
+    } catch (requestError) {
+      return {
+        ok: false,
+        error: {
+          code: requestError?.name === "AbortError" ? "worker_timeout" : "worker_request_failed",
+          message: requestError?.name === "AbortError" ? "Worker request timed out." : "Worker request failed.",
+        },
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  async function loadWorkerHealth(worker, { quiet = false } = {}) {
+    if (!worker) {
+      return;
+    }
+
+    if (!quiet) {
+      setLoadingAction("health");
+      setError(null);
+    }
+
+    const checkedAt = new Date().toISOString();
+    const response = await callWorkerRoute(worker, "/health", { timeoutMs: 8000 });
+    const result = response.data?.result || {};
+
+    if (!response.ok) {
+      updateWorkerEvidence(worker.id, (current) => ({
+        ...current,
+        health: {
+          checkedAt,
+          ok: false,
+          source: "Windows runtime worker",
+          taskType: "health",
+          target: "/health",
+          summary: response.error?.message || "Health check failed.",
+          error: response.error,
+        },
+        lastCheckedAt: checkedAt,
+      }));
+      setError(response.error);
+    } else {
+      updateWorkerEvidence(worker.id, (current) => ({
+        ...current,
+        health: {
+          checkedAt,
+          ok: result.ok !== false,
+          source: "Windows runtime worker",
+          taskType: "health",
+          target: "/health",
+          status: formatWorkerStatusValue(result.status || result.state),
+          summary: summarizeWorkerHealthResult(result),
+          error: result.ok === false ? normalizeWorkerError(result, "worker_health_failed", "Health check failed.") : null,
+        },
+        lastCheckedAt: checkedAt,
+      }));
+      if (!quiet) {
+        setError(null);
+      }
+    }
+
+    if (!quiet) {
+      setLoadingAction("");
+    }
+  }
+
+  async function loadWorkerCapabilities(worker, { quiet = false } = {}) {
+    if (!worker) {
+      return;
+    }
+
+    if (!quiet) {
+      setLoadingAction("capabilities");
+      setError(null);
+    }
+
+    const checkedAt = new Date().toISOString();
+    const response = await callWorkerRoute(worker, "/capabilities", { timeoutMs: 8000 });
+    const result = response.data?.result || {};
+
+    if (!response.ok) {
+      updateWorkerEvidence(worker.id, (current) => ({
+        ...current,
+        capabilities: {
+          checkedAt,
+          ok: false,
+          source: "Windows runtime worker",
+          taskType: "capabilities",
+          target: "/v1/capabilities",
+          entries: [],
+          summary: response.error?.message || "Capabilities request failed.",
+          error: response.error,
+        },
+        lastCheckedAt: checkedAt,
+      }));
+      setError(response.error);
+    } else {
+      const entries = extractWorkerCapabilityEntries(result);
+      const capabilitySummary = summarizeWorkerCapabilities(entries);
+
+      updateWorkerEvidence(worker.id, (current) => ({
+        ...current,
+        capabilities: {
+          checkedAt,
+          ok: result.ok !== false,
+          source: "Windows runtime worker",
+          taskType: "capabilities",
+          target: "/v1/capabilities",
+          entries,
+          supportedCount: capabilitySummary.supportedCount,
+          count: capabilitySummary.count,
+          summary:
+            capabilitySummary.count > 0
+              ? `${capabilitySummary.supportedCount} supported / ${capabilitySummary.count} reported`
+              : "No capabilities reported.",
+          error: result.ok === false ? normalizeWorkerError(result, "worker_capabilities_failed", "Capabilities request failed.") : null,
+        },
+        lastCheckedAt: checkedAt,
+      }));
+      if (!quiet) {
+        setError(null);
+      }
+    }
+
+    if (!quiet) {
+      setLoadingAction("");
+    }
+  }
+
+  async function runWorkerJob(worker, jobType, input = {}, { quiet = false, title = "" } = {}) {
+    if (!worker) {
+      return;
+    }
+
+    if (!quiet) {
+      setLoadingAction(jobType);
+      setError(null);
+    }
+
+    const checkedAt = new Date().toISOString();
+    const body = {
+      jobId: `garage_worker_${jobType}_${Date.now()}`,
+      taskType: jobType,
+      targetHost: worker.host,
+      targetService: input.targetService || null,
+      input,
+    };
+    const response = await callWorkerRoute(worker, "/jobs", {
+      method: "POST",
+      body,
+      timeoutMs: 30000,
+    });
+    const result = response.data?.result || {};
+    const taskLabel = title || formatWorkerTaskLabel(jobType);
+    const jobSummary = summarizeWorkerJobResult(result, jobType);
+    const jobEntry = response.ok
+      ? {
+          checkedAt,
+          ok: result.ok !== false,
+          source: "Windows runtime worker",
+          taskType: jobType,
+          taskLabel,
+          target: input.url || input.targetService || input.targetHost || worker.baseUrl,
+          summary: jobSummary.outcome,
+          detail: jobSummary.detail,
+          error: result.ok === false ? normalizeWorkerError(result, "worker_job_failed", "Job failed.") : null,
+        }
+      : {
+          checkedAt,
+          ok: false,
+          source: "Windows runtime worker",
+          taskType: jobType,
+          taskLabel,
+          target: input.url || input.targetService || input.targetHost || worker.baseUrl,
+          summary: response.error?.code || "worker_job_failed",
+          detail: response.error?.message || "Job failed.",
+          error: response.error,
+        };
+
+    updateWorkerEvidence(worker.id, (current) => ({
+      ...current,
+      jobResults: [jobEntry, ...(current.jobResults || [])].slice(0, 6),
+      lastCheckedAt: checkedAt,
+      lastJobAt: checkedAt,
+    }));
+
+    if (!response.ok) {
+      setError(response.error);
+    } else if (!quiet) {
+      setError(null);
+    }
+
+    if (!quiet) {
+      setLoadingAction("");
+    }
+  }
+
+  async function hydrateWorkerEvidence(worker) {
+    if (!worker) {
+      return;
+    }
+
+    if (!worker.authConfigured) {
+      setError({
+        scope: "registry",
+        code: "worker_auth_not_configured",
+        message: "Windows runtime worker may be stopped or token/config may be missing.",
+      });
+      return;
+    }
+
+    await Promise.allSettled([loadWorkerHealth(worker, { quiet: true }), loadWorkerCapabilities(worker, { quiet: true })]);
+  }
 
   async function loadWorkers() {
     setLoadingAction("workers");
-    setError("");
+    setError(null);
 
     try {
       const response = await fetch("/api/workers");
@@ -2785,84 +3299,97 @@ function WorkerEvidencePanel() {
 
       const items = Array.isArray(data.items) ? data.items : [];
       setWorkers(items);
+      setWorkerRegistryCheckedAt(new Date().toISOString());
 
-      if (!selectedWorkerId && items[0]?.id) {
-        setSelectedWorkerId(items[0].id);
+      const nextWorker = items.find((worker) => worker.id === "windows-runtime") || items[0] || null;
+
+      if (nextWorker?.id) {
+        setSelectedWorkerId(nextWorker.id);
+      } else {
+        setSelectedWorkerId("");
       }
 
-      setLatestResult({
-        title: "Worker registry",
-        ok: true,
-        payload: data,
-        checkedAt: new Date().toISOString(),
-      });
+      if (!items.length) {
+        setError({
+          scope: "registry",
+          code: "worker_registry_empty",
+          message: "No workers are registered in the backend registry.",
+        });
+        return;
+      }
+
+      if (!nextWorker || nextWorker.id !== "windows-runtime") {
+        setError({
+          scope: "registry",
+          code: "windows_runtime_unavailable",
+          message: "Windows runtime worker is not currently registered. It may be stopped or its registry entry may be missing.",
+        });
+        return;
+      }
+
+      await hydrateWorkerEvidence(nextWorker);
     } catch (requestError) {
-      setError(requestError.message);
+      setError({
+        scope: "registry",
+        code: "worker_registry_failed",
+        message: requestError.message || "Worker registry request failed.",
+      });
     } finally {
       setLoadingAction("");
     }
   }
 
-  async function callWorker(path, title, options = {}) {
-    if (!selectedWorker) {
-      setError("No worker selected.");
-      return;
-    }
+  function handleWorkerSelect(event) {
+    const nextWorkerId = event.target.value;
+    setSelectedWorkerId(nextWorkerId);
+    setError(null);
 
-    setLoadingAction(title);
-    setError("");
+    const nextWorker = workers.find((worker) => worker.id === nextWorkerId) || null;
 
-    try {
-      const response = await fetch(`/api/workers/${selectedWorker.id}${path}`, {
-        method: options.method || "GET",
-        headers: options.body
-          ? {
-              "Content-Type": "application/json",
-            }
-          : undefined,
-        body: options.body ? JSON.stringify(options.body) : undefined,
+    if (nextWorker?.authConfigured) {
+      hydrateWorkerEvidence(nextWorker).catch(() => {});
+    } else if (nextWorker) {
+      setError({
+        scope: "registry",
+        code: "worker_auth_not_configured",
+        message: "Windows runtime worker may be stopped or token/config may be missing.",
       });
-
-      const data = await response.json();
-
-      if (!response.ok || data.ok === false) {
-        throw new Error(data.error || data.errorCode || data.result?.error || data.result?.errorCode || `${title} failed.`);
-      }
-
-      setLatestResult({
-        title,
-        ok: data.ok !== false,
-        payload: data,
-        checkedAt: new Date().toISOString(),
-      });
-    } catch (requestError) {
-      setError(requestError.message);
-      setLatestResult({
-        title,
-        ok: false,
-        payload: {
-          ok: false,
-          error: requestError.message,
-        },
-        checkedAt: new Date().toISOString(),
-      });
-    } finally {
-      setLoadingAction("");
     }
   }
 
   function runGarageHealthJob() {
-    return callWorker("/jobs", "Garage Admin health check", {
-      method: "POST",
-      body: {
-        taskType: "ping_url",
-        targetHost: "windows",
+    if (!selectedWorker) {
+      return;
+    }
+
+    return runWorkerJob(
+      selectedWorker,
+      "ping_url",
+      {
+        url: "http://127.0.0.1:4010/health",
         targetService: "garage-admin-v2",
-        input: {
-          url: "http://127.0.0.1:4010/health",
-        },
       },
-    });
+      {
+        title: "Check Garage Admin health",
+      },
+    );
+  }
+
+  function runSafePm2Job() {
+    if (!selectedWorker || !selectedWorkerHasPm2Task) {
+      return;
+    }
+
+    return runWorkerJob(
+      selectedWorker,
+      "pm2_jlist",
+      {
+        targetService: "garage-admin-v2",
+      },
+      {
+        title: "Fetch PM2 status",
+      },
+    );
   }
 
   useEffect(() => {
@@ -2874,8 +3401,8 @@ function WorkerEvidencePanel() {
       <div className="panel-heading">
         <div>
           <span className="section-title">Workers</span>
-          <h2>Worker Evidence</h2>
-          <p>Read-only local worker checks. No restarts, writes, or destructive actions.</p>
+          <h2>Windows Runtime Worker</h2>
+          <p>Read-only operational evidence for Garage Admin V2 health checks. No restarts, writes, deletes, rebuilds, or shell access.</p>
         </div>
         <button type="button" className="mini-button" onClick={loadWorkers} disabled={Boolean(loadingAction)}>
           {loadingAction === "workers" ? "Refreshing..." : "Refresh"}
@@ -2883,62 +3410,339 @@ function WorkerEvidencePanel() {
       </div>
 
       {workers.length ? (
-        <div className="worker-evidence-controls">
-          <label className="worker-evidence-select-label">
-            <span className="detail-label">Worker</span>
-            <select
-              className="worker-evidence-select"
-              value={selectedWorker?.id || ""}
-              onChange={(event) => setSelectedWorkerId(event.target.value)}
-            >
-              {workers.map((worker) => (
-                <option key={worker.id} value={worker.id}>
-                  {worker.name || worker.id}
-                </option>
-              ))}
-            </select>
-          </label>
+        <>
+          <div className="worker-evidence-toolbar">
+            <label className="worker-evidence-select-label">
+              <span className="detail-label">Worker</span>
+              <select className="worker-evidence-select" value={selectedWorker?.id || ""} onChange={handleWorkerSelect}>
+                {workers.map((worker) => (
+                  <option key={worker.id} value={worker.id}>
+                    {worker.name || worker.id}
+                  </option>
+                ))}
+              </select>
+            </label>
 
-          {selectedWorker ? (
-            <div className="worker-evidence-summary">
-              <span className="status-badge status-info">{selectedWorker.host}</span>
-              <span className="status-badge status-info">{selectedWorker.role}</span>
-              <span className={`status-badge ${selectedWorker.authConfigured ? "status-completed" : "status-failed"}`}>
-                {selectedWorker.authConfigured ? "auth configured" : "auth missing"}
+            {selectedWorker ? (
+              <div className="worker-evidence-summary">
+                <span className="status-badge status-info">{selectedWorker.host}</span>
+                <span className="status-badge status-info">{selectedWorker.role}</span>
+                <span className="status-badge status-info">{getWorkerRegistrySource(selectedWorker)}</span>
+                <span className={`status-badge ${selectedWorker.authConfigured ? "status-completed" : "status-failed"}`}>
+                  {selectedWorker.authConfigured ? "auth configured" : "auth missing"}
+                </span>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="worker-summary-grid">
+            <div className="worker-summary-main">
+              <div className="detail-header">
+                <div>
+                  <span className="detail-label">Windows runtime worker</span>
+                  <h3>{selectedWorker?.name || "Windows Runtime Worker"}</h3>
+                </div>
+                <span className={`status-badge ${selectedWorkerEvidence.health ? (selectedWorkerEvidence.health.ok ? "status-completed" : "status-failed") : "status-unknown"}`}>
+                  {selectedWorkerHealthLabel}
+                </span>
+              </div>
+
+              <div className="worker-summary-detail-grid">
+                <div className="detail-item">
+                  <span className="detail-label">Name</span>
+                  <span className="detail-value" title={selectedWorker?.name || "Windows Runtime Worker"}>
+                    {selectedWorker?.name || "Windows Runtime Worker"}
+                  </span>
+                </div>
+                <div className="detail-item">
+                  <span className="detail-label">ID</span>
+                  <span className="detail-value">{selectedWorker?.id || "windows-runtime"}</span>
+                </div>
+                <div className="detail-item">
+                  <span className="detail-label">Host / role</span>
+                  <span className="detail-value">{getWorkerStateLine(selectedWorker)}</span>
+                </div>
+                <div className="detail-item">
+                  <span className="detail-label">Base URL</span>
+                  <span className="detail-value" title={selectedWorker?.baseUrl || ""}>
+                    {selectedWorker?.baseUrl || "http://127.0.0.1:4091"}
+                  </span>
+                </div>
+                <div className="detail-item">
+                  <span className="detail-label">Base route source</span>
+                  <span className="detail-value">{getWorkerRegistrySource(selectedWorker)}</span>
+                </div>
+                <div className="detail-item">
+                  <span className="detail-label">Health status</span>
+                  <span className="detail-value">{selectedWorkerHealthSummary}</span>
+                </div>
+                <div className="detail-item">
+                  <span className="detail-label">Capabilities</span>
+                  <span className="detail-value">
+                    {selectedWorkerCapabilitySummary.count > 0
+                      ? `${selectedWorkerCapabilitySummary.supportedCount} supported / ${selectedWorkerCapabilitySummary.count} reported`
+                      : "Not loaded yet."}
+                  </span>
+                </div>
+                <div className="detail-item">
+                  <span className="detail-label">Last checked</span>
+                  <span className="detail-value">{formatCreatedAt(selectedWorkerLastCheckedAt)}</span>
+                </div>
+                <div className="detail-item">
+                  <span className="detail-label">Last job result</span>
+                  <span className="detail-value">{selectedWorkerLastJobAt ? formatCreatedAt(selectedWorkerLastJobAt) : "Not run yet"}</span>
+                </div>
+              </div>
+
+              <div className="worker-capability-chip-row">
+                {selectedWorkerCapabilities.length ? (
+                  selectedWorkerCapabilitySummary.preview.map((entry) => (
+                    <span
+                      key={entry.key}
+                      className={`status-badge ${entry.supported ? "status-supported" : "status-unknown"} worker-capability-chip`}
+                      title={entry.detail || entry.label}
+                    >
+                      {entry.label}
+                    </span>
+                  ))
+                ) : (
+                  <span className="empty-state">Capabilities are loaded on demand and shown as read-only evidence.</span>
+                )}
+                {selectedWorkerCapabilities.length > selectedWorkerCapabilitySummary.preview.length ? (
+                  <span className="status-badge status-unknown worker-capability-chip">
+                    +{selectedWorkerCapabilities.length - selectedWorkerCapabilitySummary.preview.length} more
+                  </span>
+                ) : null}
+              </div>
+            </div>
+          </div>
+
+          <div className="worker-job-grid">
+            <button
+              type="button"
+              className="worker-job-card"
+              onClick={() => loadWorkerHealth(selectedWorker)}
+              disabled={!selectedWorker || Boolean(loadingAction)}
+            >
+              <span className="detail-label">Check worker health</span>
+              <span className="worker-job-card-copy">GET /api/workers/:id/health</span>
+              <span className={`status-badge ${loadingAction === "health" ? "status-executing" : selectedWorkerEvidence.health?.ok ? "status-completed" : "status-unknown"}`}>
+                {loadingAction === "health" ? "checking" : selectedWorkerEvidence.health ? (selectedWorkerEvidence.health.ok ? "healthy" : "attention") : "run"}
               </span>
+            </button>
+
+            <button
+              type="button"
+              className="worker-job-card"
+              onClick={() => loadWorkerCapabilities(selectedWorker)}
+              disabled={!selectedWorker || Boolean(loadingAction)}
+            >
+              <span className="detail-label">Load capabilities</span>
+              <span className="worker-job-card-copy">GET /api/workers/:id/capabilities</span>
+              <span className={`status-badge ${loadingAction === "capabilities" ? "status-executing" : selectedWorkerCapabilities.length ? "status-completed" : "status-unknown"}`}>
+                {loadingAction === "capabilities" ? "loading" : selectedWorkerCapabilities.length ? `${selectedWorkerCapabilities.length} reported` : "run"}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              className="worker-job-card"
+              onClick={runGarageHealthJob}
+              disabled={!selectedWorker || Boolean(loadingAction)}
+            >
+              <span className="detail-label">Check Garage Admin health via worker</span>
+              <span className="worker-job-card-copy">ping_url to http://127.0.0.1:4010/health</span>
+              <span className={`status-badge ${loadingAction === "ping_url" ? "status-executing" : "status-info"}`}>read-only</span>
+            </button>
+
+            <button
+              type="button"
+              className="worker-job-card"
+              onClick={runSafePm2Job}
+              disabled={!selectedWorker || Boolean(loadingAction) || !selectedWorkerHasPm2Task}
+            >
+              <span className="detail-label">Fetch safe PM2 status</span>
+              <span className="worker-job-card-copy">
+                {selectedWorkerHasPm2Task ? "pm2_jlist read-only task" : "Not advertised by this worker"}
+              </span>
+              <span className={`status-badge ${selectedWorkerHasPm2Task ? "status-supported" : "status-unknown"}`}>
+                {selectedWorkerHasPm2Task ? "supported" : "hidden"}
+              </span>
+            </button>
+          </div>
+
+          {error ? (
+            <div className="banner error-banner worker-evidence-error">
+              <strong>{error.code || "worker_error"}</strong>
+              <span>{error.message}</span>
             </div>
           ) : null}
-        </div>
-      ) : (
-        <div className="empty-state">No workers registered yet.</div>
-      )}
 
-      <div className="worker-evidence-actions">
-        <button type="button" className="mini-button" onClick={() => callWorker("/health", "Worker health")} disabled={!selectedWorker || Boolean(loadingAction)}>
-          Health
-        </button>
-        <button type="button" className="mini-button" onClick={() => callWorker("/capabilities", "Worker capabilities")} disabled={!selectedWorker || Boolean(loadingAction)}>
-          Capabilities
-        </button>
-        <button type="button" className="mini-button" onClick={runGarageHealthJob} disabled={!selectedWorker || Boolean(loadingAction)}>
-          Garage health job
-        </button>
-      </div>
+          {workerUnavailableMessage ? <div className="empty-state worker-unavailable-note">{workerUnavailableMessage}</div> : null}
 
-      {error ? <div className="banner error-banner worker-evidence-error">{error}</div> : null}
+          <div className="worker-evidence-feed">
+            <div className="worker-evidence-feed-header">
+              <div>
+                <span className="detail-label">Result provenance</span>
+                <p className="worker-evidence-feed-copy">Source: Windows runtime worker. Read-only evidence only. Timestamps reflect the last observed worker check or job result.</p>
+              </div>
+            </div>
 
-      {latestResult ? (
-        <div className="worker-evidence-result">
-          <div className="detail-header">
-            <span className="detail-label">{latestResult.title}</span>
-            <span className={`status-badge ${latestResult.ok ? "status-completed" : "status-failed"}`}>
-              {latestResult.ok ? "ok" : "failed"}
-            </span>
+            {selectedWorkerEvidence.health ? (
+              <article className="worker-evidence-record">
+                <div className="detail-header">
+                  <span className="detail-label">Worker health</span>
+                  <span className={`status-badge ${selectedWorkerEvidence.health.ok ? "status-completed" : "status-failed"}`}>
+                    {selectedWorkerEvidence.health.ok ? "ok" : "failed"}
+                  </span>
+                </div>
+                <div className="worker-evidence-record-grid">
+                  <div className="detail-item">
+                    <span className="detail-label">Source</span>
+                    <span className="detail-value">{selectedWorkerEvidence.health.source}</span>
+                  </div>
+                  <div className="detail-item">
+                    <span className="detail-label">Evidence</span>
+                    <span className="detail-value">Read-only evidence</span>
+                  </div>
+                  <div className="detail-item">
+                    <span className="detail-label">Task type</span>
+                    <span className="detail-value">{selectedWorkerEvidence.health.taskType}</span>
+                  </div>
+                  <div className="detail-item">
+                    <span className="detail-label">Target</span>
+                    <span className="detail-value">{selectedWorkerEvidence.health.target}</span>
+                  </div>
+                  <div className="detail-item">
+                    <span className="detail-label">Timestamp</span>
+                    <span className="detail-value">{formatCreatedAt(selectedWorkerEvidence.health.checkedAt)}</span>
+                  </div>
+                  <div className="detail-item">
+                    <span className="detail-label">Status</span>
+                    <span className="detail-value">{selectedWorkerEvidence.health.status || selectedWorkerEvidence.health.summary}</span>
+                  </div>
+                </div>
+                <p className="worker-evidence-record-copy">{selectedWorkerEvidence.health.summary}</p>
+                {selectedWorkerEvidence.health.error ? (
+                  <p className="worker-evidence-record-error">
+                    {selectedWorkerEvidence.health.error.code}: {selectedWorkerEvidence.health.error.message}
+                  </p>
+                ) : null}
+              </article>
+            ) : null}
+
+            {selectedWorkerEvidence.capabilities ? (
+              <article className="worker-evidence-record">
+                <div className="detail-header">
+                  <span className="detail-label">Capabilities</span>
+                  <span className={`status-badge ${selectedWorkerEvidence.capabilities.ok ? "status-completed" : "status-failed"}`}>
+                    {selectedWorkerEvidence.capabilities.ok ? "loaded" : "failed"}
+                  </span>
+                </div>
+                <div className="worker-evidence-record-grid">
+                  <div className="detail-item">
+                    <span className="detail-label">Source</span>
+                    <span className="detail-value">{selectedWorkerEvidence.capabilities.source}</span>
+                  </div>
+                  <div className="detail-item">
+                    <span className="detail-label">Evidence</span>
+                    <span className="detail-value">Read-only evidence</span>
+                  </div>
+                  <div className="detail-item">
+                    <span className="detail-label">Task type</span>
+                    <span className="detail-value">{selectedWorkerEvidence.capabilities.taskType}</span>
+                  </div>
+                  <div className="detail-item">
+                    <span className="detail-label">Target</span>
+                    <span className="detail-value">{selectedWorkerEvidence.capabilities.target}</span>
+                  </div>
+                  <div className="detail-item">
+                    <span className="detail-label">Timestamp</span>
+                    <span className="detail-value">{formatCreatedAt(selectedWorkerEvidence.capabilities.checkedAt)}</span>
+                  </div>
+                  <div className="detail-item">
+                    <span className="detail-label">Reported</span>
+                    <span className="detail-value">
+                      {selectedWorkerEvidence.capabilities.supportedCount || 0} supported / {selectedWorkerEvidence.capabilities.count || 0} total
+                    </span>
+                  </div>
+                </div>
+                <div className="worker-capability-chip-row worker-capability-chip-row-feed">
+                  {selectedWorkerCapabilities.length ? (
+                    selectedWorkerCapabilities.map((entry) => (
+                      <span
+                        key={`feed-${entry.key}`}
+                        className={`status-badge ${entry.supported ? "status-supported" : "status-unknown"} worker-capability-chip`}
+                        title={entry.detail || entry.label}
+                      >
+                        {entry.label}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="empty-state">No capability entries were reported.</span>
+                  )}
+                </div>
+                <p className="worker-evidence-record-copy">{selectedWorkerEvidence.capabilities.summary}</p>
+                {selectedWorkerEvidence.capabilities.error ? (
+                  <p className="worker-evidence-record-error">
+                    {selectedWorkerEvidence.capabilities.error.code}: {selectedWorkerEvidence.capabilities.error.message}
+                  </p>
+                ) : null}
+              </article>
+            ) : null}
+
+            {selectedWorkerEvidence.jobResults.length ? (
+              <div className="worker-job-feed">
+                {selectedWorkerEvidence.jobResults.map((jobResult) => (
+                  <article key={`${jobResult.taskType}-${jobResult.checkedAt}`} className="worker-evidence-record">
+                    <div className="detail-header">
+                      <span className="detail-label">{jobResult.taskLabel}</span>
+                      <span className={`status-badge ${jobResult.ok ? "status-completed" : "status-failed"}`}>{jobResult.ok ? "ok" : "failed"}</span>
+                    </div>
+                    <div className="worker-evidence-record-grid">
+                      <div className="detail-item">
+                        <span className="detail-label">Source</span>
+                        <span className="detail-value">{jobResult.source}</span>
+                      </div>
+                      <div className="detail-item">
+                        <span className="detail-label">Evidence</span>
+                        <span className="detail-value">Read-only evidence</span>
+                      </div>
+                      <div className="detail-item">
+                        <span className="detail-label">Task type</span>
+                        <span className="detail-value">{jobResult.taskType}</span>
+                      </div>
+                      <div className="detail-item">
+                        <span className="detail-label">Target</span>
+                        <span className="detail-value" title={jobResult.target}>
+                          {jobResult.target}
+                        </span>
+                      </div>
+                      <div className="detail-item">
+                        <span className="detail-label">Timestamp</span>
+                        <span className="detail-value">{formatCreatedAt(jobResult.checkedAt)}</span>
+                      </div>
+                      <div className="detail-item">
+                        <span className="detail-label">Result</span>
+                        <span className="detail-value">{jobResult.summary}</span>
+                      </div>
+                    </div>
+                    <p className="worker-evidence-record-copy">{jobResult.detail}</p>
+                    {jobResult.error ? (
+                      <p className="worker-evidence-record-error">
+                        {jobResult.error.code}: {jobResult.error.message}
+                      </p>
+                    ) : null}
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <div className="empty-state">Run a worker job to capture read-only evidence with provenance.</div>
+            )}
           </div>
-          <pre className="worker-evidence-json">{JSON.stringify(latestResult.payload, null, 2)}</pre>
-        </div>
+        </>
       ) : (
-        <div className="empty-state">Run a worker check to see evidence.</div>
+        <div className="empty-state">No workers are registered in the backend registry.</div>
       )}
     </section>
   );

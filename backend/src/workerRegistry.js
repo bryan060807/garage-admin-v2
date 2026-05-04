@@ -5,7 +5,10 @@
     try {
       const parsed = JSON.parse(configured);
       if (Array.isArray(parsed)) {
-        return parsed;
+        return parsed.map((worker) => ({
+          ...worker,
+          registrySource: "WORKER_REGISTRY_JSON"
+        }));
       }
     } catch {
       // Fall through to default registry.
@@ -21,7 +24,8 @@
       baseUrl: process.env.WINDOWS_WORKER_URL || "http://127.0.0.1:4091",
       authHeader: "x-worker-auth",
       authTokenEnv: "WINDOWS_WORKER_AUTH_TOKEN",
-      description: "Read-only Windows PM2/runtime/repo evidence worker."
+      description: "Read-only Windows PM2/runtime/repo evidence worker.",
+      registrySource: "built-in worker registry"
     }
   ];
 }
@@ -34,6 +38,7 @@ function publicWorker(worker) {
     role: worker.role,
     baseUrl: worker.baseUrl,
     description: worker.description,
+    registrySource: worker.registrySource || "built-in worker registry",
     authConfigured: Boolean(process.env[worker.authTokenEnv])
   };
 }
