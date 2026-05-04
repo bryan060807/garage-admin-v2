@@ -1,4 +1,4 @@
-import { Component, useEffect, useRef, useState } from "react";
+﻿import { Component, useEffect, useRef, useState } from "react";
 import {
   buildActionApprovalContext,
   buildActionApprovalContextFromReviewSnapshot,
@@ -344,7 +344,7 @@ function buildAssistantAttentionState({
   return {
     count: labels.length,
     labels,
-    summary: labels.length ? labels.join(" · ") : "Ready when needed",
+    summary: labels.length ? labels.join(" Â· ") : "Ready when needed",
   };
 }
 
@@ -719,7 +719,7 @@ function formatLookupMeta(item) {
     parts.push(formatBytes(item.size));
   }
 
-  return parts.join(" · ");
+  return parts.join(" Â· ");
 }
 
 function isLookupItemSelected(item, selection) {
@@ -1166,11 +1166,11 @@ function LogEventHighlights({ events, emptyMessage, onSelectService, selectedSer
                   className="detail-value diagnosis-detail-value"
                   title={[event.relatedServiceName || event.relatedServiceId, event.relatedServiceHost, event.relatedServiceManager]
                     .filter(Boolean)
-                    .join(" · ")}
+                    .join(" Â· ")}
                 >
                   {[event.relatedServiceName || event.relatedServiceId, event.relatedServiceHost, event.relatedServiceManager]
                     .filter(Boolean)
-                    .join(" · ")}
+                    .join(" Â· ")}
                 </span>
                 {typeof onSelectService === "function" && event.relatedServiceId !== selectedServiceId ? (
                   <button
@@ -1365,7 +1365,7 @@ function buildServiceRelationshipSections(service, services) {
       key: item.key,
       value: item.values.join("\n"),
       meta: item.meta,
-      title: `${item.meta}: ${item.values.join(" · ")}`,
+      title: `${item.meta}: ${item.values.join(" Â· ")}`,
     }));
   const dependencyItems = dependencies
     .map((dependency) => {
@@ -1408,7 +1408,7 @@ function buildServiceRelationshipSections(service, services) {
         value: displayName || serviceId,
         meta: metaLines.join("\n"),
         serviceId,
-        title: [displayName || serviceId, ...metaLines].filter(Boolean).join(" · "),
+        title: [displayName || serviceId, ...metaLines].filter(Boolean).join(" Â· "),
       };
     })
     .filter(Boolean);
@@ -1566,7 +1566,7 @@ function getServiceRuntimeSummary(service) {
     parts.push(`${restarts} restart${restarts === 1 ? "" : "s"}`);
   }
 
-  return parts.join(" · ");
+  return parts.join(" Â· ");
 }
 
 function getServiceLocalCheckSummary(service) {
@@ -1580,7 +1580,7 @@ function getServiceLocalCheckSummary(service) {
 
   if (localHttp.checkedAt) {
     const label = localHttp.kind === "health-url" ? "health" : "local HTTP";
-    parts.push(localHttp.ok ? `${label} ok${localHttp.status ? ` · HTTP ${localHttp.status}` : ""}` : `${label} failed`);
+    parts.push(localHttp.ok ? `${label} ok${localHttp.status ? ` Â· HTTP ${localHttp.status}` : ""}` : `${label} failed`);
   }
 
   if (localPort.checkedAt) {
@@ -1588,7 +1588,7 @@ function getServiceLocalCheckSummary(service) {
     parts.push(localPort.ok ? `port ${port} listening` : `port ${port} unavailable`);
   }
 
-  return parts.join(" · ");
+  return parts.join(" Â· ");
 }
 
 function normalizeServiceItems(items) {
@@ -1696,7 +1696,7 @@ function getCompactServiceMeta(service) {
     parts.push(`port ${port}`);
   }
 
-  return parts.join(" · ");
+  return parts.join(" Â· ");
 }
 
 const SERVICE_SEVERITY_ORDER = {
@@ -1799,7 +1799,7 @@ function summarizeServiceGroup(services) {
     !attentionCount && runningCount ? `${runningCount} running` : null,
   ]
     .filter(Boolean)
-    .join(" · ");
+    .join(" Â· ");
 }
 
 function groupServicesForRail(services, selectedServiceName) {
@@ -2011,7 +2011,7 @@ function actionSupportSummary(actionType, capability) {
     return detail;
   }
 
-  return setupHint ? `${detail} · ${setupHint}` : detail;
+  return setupHint ? `${detail} Â· ${setupHint}` : detail;
 }
 
 const ACTION_LABELS = {
@@ -2053,7 +2053,7 @@ function getApiErrorMessage(data, fallback) {
     parts.push(data.message);
   }
 
-  return parts.length ? parts.join(" · ") : data.error || fallback;
+  return parts.length ? parts.join(" Â· ") : data.error || fallback;
 }
 
 function getUnsupportedRestartMessage(result) {
@@ -2121,7 +2121,7 @@ function getVerificationSummary(result) {
     parts.push(verification.error);
   }
 
-  return parts.join(" · ");
+  return parts.join(" Â· ");
 }
 
 function VerificationSummary({ result }) {
@@ -2484,13 +2484,13 @@ function getHealthStatusSummary(healthResult) {
 
   if (healthResult.mode === "bridge-health") {
     return `${healthResult.ok ? "Bridge OK" : "Bridge attention"}${
-      healthResult.status ? ` · HTTP ${healthResult.status}` : ""
+      healthResult.status ? ` Â· HTTP ${healthResult.status}` : ""
     }`;
   }
 
   if (healthResult.mode === "local-url") {
     return `${healthResult.ok ? "Reachable" : "Reachability failed"}${
-      healthResult.status ? ` · HTTP ${healthResult.status}` : ""
+      healthResult.status ? ` Â· HTTP ${healthResult.status}` : ""
     }`;
   }
 
@@ -2499,11 +2499,11 @@ function getHealthStatusSummary(healthResult) {
   }
 
   if (healthResult.mode === "status-only") {
-    const pm2Status = healthResult.verification?.pm2Status ? ` · PM2 ${healthResult.verification.pm2Status}` : "";
+    const pm2Status = healthResult.verification?.pm2Status ? ` Â· PM2 ${healthResult.verification.pm2Status}` : "";
     return `${healthResult.ok ? "Status only" : "Status alert"}${pm2Status}`;
   }
 
-  return `${healthResult.ok ? "OK" : "Attention"}${healthResult.status ? ` · HTTP ${healthResult.status}` : ""}`;
+  return `${healthResult.ok ? "OK" : "Attention"}${healthResult.status ? ` Â· HTTP ${healthResult.status}` : ""}`;
 }
 
 function getRestartConfirmationText(restartSupported) {
@@ -2753,6 +2753,189 @@ function ApprovalFreshnessSection({
     </div>
   );
 }
+
+function WorkerEvidencePanel() {
+  const [workers, setWorkers] = useState([]);
+  const [selectedWorkerId, setSelectedWorkerId] = useState("");
+  const [latestResult, setLatestResult] = useState(null);
+  const [loadingAction, setLoadingAction] = useState("");
+  const [error, setError] = useState("");
+
+  const selectedWorker = workers.find((worker) => worker.id === selectedWorkerId) || workers[0] || null;
+
+  async function loadWorkers() {
+    setLoadingAction("workers");
+    setError("");
+
+    try {
+      const response = await fetch("/api/workers");
+      const data = await response.json();
+
+      if (!response.ok || !data.ok) {
+        throw new Error(data.error || data.errorCode || "Worker registry request failed.");
+      }
+
+      const items = Array.isArray(data.items) ? data.items : [];
+      setWorkers(items);
+
+      if (!selectedWorkerId && items[0]?.id) {
+        setSelectedWorkerId(items[0].id);
+      }
+
+      setLatestResult({
+        title: "Worker registry",
+        ok: true,
+        payload: data,
+        checkedAt: new Date().toISOString(),
+      });
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setLoadingAction("");
+    }
+  }
+
+  async function callWorker(path, title, options = {}) {
+    if (!selectedWorker) {
+      setError("No worker selected.");
+      return;
+    }
+
+    setLoadingAction(title);
+    setError("");
+
+    try {
+      const response = await fetch(`/api/workers/${selectedWorker.id}${path}`, {
+        method: options.method || "GET",
+        headers: options.body
+          ? {
+              "Content-Type": "application/json",
+            }
+          : undefined,
+        body: options.body ? JSON.stringify(options.body) : undefined,
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || data.ok === false) {
+        throw new Error(data.error || data.errorCode || data.result?.error || data.result?.errorCode || `${title} failed.`);
+      }
+
+      setLatestResult({
+        title,
+        ok: data.ok !== false,
+        payload: data,
+        checkedAt: new Date().toISOString(),
+      });
+    } catch (requestError) {
+      setError(requestError.message);
+      setLatestResult({
+        title,
+        ok: false,
+        payload: {
+          ok: false,
+          error: requestError.message,
+        },
+        checkedAt: new Date().toISOString(),
+      });
+    } finally {
+      setLoadingAction("");
+    }
+  }
+
+  function runGarageHealthJob() {
+    return callWorker("/jobs", "Garage Admin health check", {
+      method: "POST",
+      body: {
+        taskType: "ping_url",
+        targetHost: "windows",
+        targetService: "garage-admin-v2",
+        input: {
+          url: "http://127.0.0.1:4010/health",
+        },
+      },
+    });
+  }
+
+  useEffect(() => {
+    loadWorkers().catch(() => {});
+  }, []);
+
+  return (
+    <section className="panel-card worker-evidence-card">
+      <div className="panel-heading">
+        <div>
+          <span className="section-title">Workers</span>
+          <h2>Worker Evidence</h2>
+          <p>Read-only local worker checks. No restarts, writes, or destructive actions.</p>
+        </div>
+        <button type="button" className="mini-button" onClick={loadWorkers} disabled={Boolean(loadingAction)}>
+          {loadingAction === "workers" ? "Refreshing..." : "Refresh"}
+        </button>
+      </div>
+
+      {workers.length ? (
+        <div className="worker-evidence-controls">
+          <label className="worker-evidence-select-label">
+            <span className="detail-label">Worker</span>
+            <select
+              className="worker-evidence-select"
+              value={selectedWorker?.id || ""}
+              onChange={(event) => setSelectedWorkerId(event.target.value)}
+            >
+              {workers.map((worker) => (
+                <option key={worker.id} value={worker.id}>
+                  {worker.name || worker.id}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {selectedWorker ? (
+            <div className="worker-evidence-summary">
+              <span className="status-badge status-info">{selectedWorker.host}</span>
+              <span className="status-badge status-info">{selectedWorker.role}</span>
+              <span className={`status-badge ${selectedWorker.authConfigured ? "status-completed" : "status-failed"}`}>
+                {selectedWorker.authConfigured ? "auth configured" : "auth missing"}
+              </span>
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        <div className="empty-state">No workers registered yet.</div>
+      )}
+
+      <div className="worker-evidence-actions">
+        <button type="button" className="mini-button" onClick={() => callWorker("/health", "Worker health")} disabled={!selectedWorker || Boolean(loadingAction)}>
+          Health
+        </button>
+        <button type="button" className="mini-button" onClick={() => callWorker("/capabilities", "Worker capabilities")} disabled={!selectedWorker || Boolean(loadingAction)}>
+          Capabilities
+        </button>
+        <button type="button" className="mini-button" onClick={runGarageHealthJob} disabled={!selectedWorker || Boolean(loadingAction)}>
+          Garage health job
+        </button>
+      </div>
+
+      {error ? <div className="banner error-banner worker-evidence-error">{error}</div> : null}
+
+      {latestResult ? (
+        <div className="worker-evidence-result">
+          <div className="detail-header">
+            <span className="detail-label">{latestResult.title}</span>
+            <span className={`status-badge ${latestResult.ok ? "status-completed" : "status-failed"}`}>
+              {latestResult.ok ? "ok" : "failed"}
+            </span>
+          </div>
+          <pre className="worker-evidence-json">{JSON.stringify(latestResult.payload, null, 2)}</pre>
+        </div>
+      ) : (
+        <div className="empty-state">Run a worker check to see evidence.</div>
+      )}
+    </section>
+  );
+}
+
 
 export default function App() {
   const [incidents, setIncidents] = useState([]);
@@ -3771,7 +3954,7 @@ export default function App() {
     : "No action result yet.";
   const restartState = latestRestartAction?.status || (selectedServiceCanRestart ? "supported" : "unsupported");
   const restartStateText = latestRestartAction
-    ? `${actionLabel(latestRestartAction.actionType)} · ${formatCreatedAt(latestRestartAction.createdAt)}`
+    ? `${actionLabel(latestRestartAction.actionType)} Â· ${formatCreatedAt(latestRestartAction.createdAt)}`
     : selectedServiceCanRestart
       ? "Available with approval."
       : capabilityMessage(selectedServiceRestartCapability, "Unavailable for this service.");
@@ -3801,7 +3984,7 @@ export default function App() {
         selectedServicePort ? `port ${selectedServicePort}` : null,
       ]
         .filter(Boolean)
-        .join(" · ")
+        .join(" Â· ")
     : "Select a service to inspect logs and actions.";
   const signalAlertCount = logSignals.alertCount + (hasHealthOutput && !healthOutput.ok ? 1 : 0) + (latestActionStatus === "failed" ? 1 : 0);
   const restartDraftAction = selectedServiceRecord
@@ -4157,7 +4340,7 @@ export default function App() {
     auditRecentCount ? `${auditRecentCount} recent` : null,
   ]
     .filter(Boolean)
-    .join(" · ");
+    .join(" Â· ");
   const incidentsDisclosureDefaultOpen = false;
   const restartDisclosureDefaultOpen =
     selectedServiceCanRestart || Boolean(showRestartForm) || Boolean(restartResult);
@@ -4604,7 +4787,7 @@ export default function App() {
     assistantLauncherSummary,
   ]
     .filter(Boolean)
-    .join(" · ");
+    .join(" Â· ");
   const assistantLauncherAriaLabel = [
     "Open assistant",
     assistantServiceLabel ? `selected service ${assistantServiceLabel}` : "no service selected",
@@ -5053,9 +5236,9 @@ export default function App() {
                   onClick={() => handleIncidentSelect(incident)}
                 >
                   <strong title={incident.title}>{incident.title}</strong>
-                  <span title={`${incident.status}${incident.serviceName ? ` · ${incident.serviceName}` : ""}`}>
+                  <span title={`${incident.status}${incident.serviceName ? ` Â· ${incident.serviceName}` : ""}`}>
                     {incident.status}
-                    {incident.serviceName ? ` · ${incident.serviceName}` : ""}
+                    {incident.serviceName ? ` Â· ${incident.serviceName}` : ""}
                   </span>
                 </button>
               ))}
@@ -5337,7 +5520,7 @@ export default function App() {
                       <div className="diagnosis-clear-copy">
                         <strong>{diagnosisSummaryText}</strong>
                         <span>
-                          Service status: {formatStatusLabel(selectedServiceStatus)} · {outputAlertSummary}
+                          Service status: {formatStatusLabel(selectedServiceStatus)} Â· {outputAlertSummary}
                         </span>
                       </div>
                       <div className="diagnosis-actions-block">
@@ -5362,8 +5545,8 @@ export default function App() {
                 <h2>Service Logs</h2>
                 <p>
                   {selectedService
-                    ? `${logLineCount} lines · ${formatBytes(logs || "")}${
-                        hasActiveLogFilter ? ` · ${visibleLogLines.length} shown` : ""
+                    ? `${logLineCount} lines Â· ${formatBytes(logs || "")}${
+                        hasActiveLogFilter ? ` Â· ${visibleLogLines.length} shown` : ""
                       }`
                     : "No service selected"}
                 </p>
@@ -5435,7 +5618,7 @@ export default function App() {
             {logsArchiveItems.length ? (
               <div className="archive-note">
                 {logsArchiveItems.length} log archive{logsArchiveItems.length === 1 ? "" : "s"} this session. Latest:{" "}
-                {logsArchiveItems[0].serviceName} · {logsArchiveItems[0].lineCount} lines ·{" "}
+                {logsArchiveItems[0].serviceName} Â· {logsArchiveItems[0].lineCount} lines Â·{" "}
                 {formatCreatedAt(logsArchiveItems[0].archivedAt)}
               </div>
             ) : null}
@@ -5444,6 +5627,7 @@ export default function App() {
             </div>
 
             <div className="workspace-side-column">
+              <WorkerEvidencePanel />
               <section
                 className={`ops-grid ${isAssistantMinimized ? "ops-grid-assistant-minimized" : ""}`}
                 ref={opsGridRef}
@@ -5557,7 +5741,7 @@ export default function App() {
                       </span>
                       <span>
                         {healthMeta?.receivedAt
-                          ? `${healthStatusText} · ${formatCreatedAt(healthMeta.receivedAt)}`
+                          ? `${healthStatusText} Â· ${formatCreatedAt(healthMeta.receivedAt)}`
                           : "Run a health check to load current output."}
                       </span>
                     </div>
@@ -6081,3 +6265,5 @@ export default function App() {
     </>
   );
 }
+
+
