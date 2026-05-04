@@ -2524,6 +2524,10 @@ function createWorkerEvidenceSnapshot() {
   };
 }
 
+function getWorkerDisplayName(worker) {
+  return readServiceString(worker?.name, worker?.id, "Worker");
+}
+
 function getWorkerRegistrySource(worker) {
   return readServiceString(worker?.registrySource, worker?.baseRouteSource, worker?.source, "built-in worker registry");
 }
@@ -2545,6 +2549,14 @@ function formatWorkerTaskLabel(taskType) {
 
   if (normalized === "pm2_jlist") {
     return "Fetch PM2 status";
+  }
+
+  if (normalized === "system_pulse") {
+    return "Run system pulse";
+  }
+
+  if (normalized === "templates") {
+    return "Inspect templates";
   }
 
   return formatStatusLabel(normalized);
@@ -2623,6 +2635,12 @@ function normalizeWorkerCapabilityEntry(entry, keyHint = "") {
   };
 }
 
+function isHiddenWorkerCapabilityEntry(entry) {
+  const text = `${entry?.key || ""} ${entry?.label || ""} ${entry?.detail || ""}`.toLowerCase();
+
+  return /\bcreate\b/.test(text);
+}
+
 function extractWorkerCapabilityEntries(payload) {
   const candidates = [
     payload,
@@ -2635,7 +2653,7 @@ function extractWorkerCapabilityEntries(payload) {
 
   for (const candidate of candidates) {
     if (Array.isArray(candidate)) {
-      return candidate.map((entry) => normalizeWorkerCapabilityEntry(entry)).filter(Boolean);
+      return candidate.map((entry) => normalizeWorkerCapabilityEntry(entry)).filter(Boolean).filter((entry) => !isHiddenWorkerCapabilityEntry(entry));
     }
 
     if (isPlainObject(candidate)) {
@@ -2644,7 +2662,7 @@ function extractWorkerCapabilityEntries(payload) {
         .filter(Boolean);
 
       if (entries.length) {
-        return entries;
+        return entries.filter((entry) => !isHiddenWorkerCapabilityEntry(entry));
       }
     }
   }
@@ -2714,6 +2732,10 @@ function summarizeWorkerCapabilities(entries) {
 
 function supportsSafePm2Task(entries) {
   return Array.isArray(entries) && entries.some((entry) => /pm2[_-\s]?jlist/i.test(`${entry.key || ""} ${entry.label || ""} ${entry.detail || ""}`));
+}
+
+function supportsWorkerTask(entries, taskPattern) {
+  return Array.isArray(entries) && entries.some((entry) => taskPattern.test(`${entry.key || ""} ${entry.label || ""} ${entry.detail || ""}`));
 }
 
 function getWorkerStateLine(worker) {
@@ -2991,12 +3013,19 @@ function WorkerEvidencePanel() {
     workers.find((worker) => worker.id === "windows-runtime") ||
     workers[0] ||
     null;
+  const selectedWorkerLabel = getWorkerDisplayName(selectedWorker);
+  const selectedWorkerIsWindows = selectedWorker?.host === "windows";
+  const selectedWorkerIsFedora = selectedWorker?.host === "fedora";
+  const selectedWorkerIsFedoraInfra = selectedWorker?.id === "fedora-infra";
+  const selectedWorkerIsFedoraBootstrap = selectedWorker?.id === "fedora-bootstrap";
   const selectedWorkerEvidence = selectedWorker ? workerEvidence[selectedWorker.id] || createWorkerEvidenceSnapshot() : createWorkerEvidenceSnapshot();
   const selectedWorkerCapabilities = Array.isArray(selectedWorkerEvidence.capabilities?.entries)
     ? selectedWorkerEvidence.capabilities.entries
     : [];
   const selectedWorkerCapabilitySummary = summarizeWorkerCapabilities(selectedWorkerCapabilities);
   const selectedWorkerHasPm2Task = supportsSafePm2Task(selectedWorkerCapabilities);
+  const selectedWorkerHasSystemPulseTask = selectedWorkerIsFedoraInfra || supportsWorkerTask(selectedWorkerCapabilities, /system[_-\s]?pulse/i);
+  const selectedWorkerHasTemplatesTask = selectedWorkerIsFedoraBootstrap || supportsWorkerTask(selectedWorkerCapabilities, /\btemplates?\b/i);
   const selectedWorkerHealthSummary = selectedWorkerEvidence.health?.summary || "Not checked yet.";
   const selectedWorkerHealthLabel = selectedWorkerEvidence.health
     ? selectedWorkerEvidence.health.ok
@@ -3009,7 +3038,7 @@ function WorkerEvidencePanel() {
   const workerUnavailableMessage = windowsWorkerMissing
     ? "Windows runtime worker is not currently registered. It may be stopped or its registry entry may be missing."
     : selectedWorker && !selectedWorker.authConfigured
-      ? "Windows runtime worker may be stopped or token/config may be missing."
+      ? `${selectedWorkerLabel} may be stopped or token/config may be missing.`
       : "";
 
   function updateWorkerEvidence(workerId, updater) {
@@ -3103,7 +3132,7 @@ function WorkerEvidencePanel() {
         health: {
           checkedAt,
           ok: false,
-          source: "Windows runtime worker",
+          source: getWorkerDisplayName(worker),
           taskType: "health",
           target: "/health",
           summary: response.error?.message || "Health check failed.",
@@ -3118,7 +3147,7 @@ function WorkerEvidencePanel() {
         health: {
           checkedAt,
           ok: result.ok !== false,
-          source: "Windows runtime worker",
+          source: getWorkerDisplayName(worker),
           taskType: "health",
           target: "/health",
           status: formatWorkerStatusValue(result.status || result.state),
@@ -3157,7 +3186,7 @@ function WorkerEvidencePanel() {
         capabilities: {
           checkedAt,
           ok: false,
-          source: "Windows runtime worker",
+          source: getWorkerDisplayName(worker),
           taskType: "capabilities",
           target: "/v1/capabilities",
           entries: [],
@@ -3176,7 +3205,7 @@ function WorkerEvidencePanel() {
         capabilities: {
           checkedAt,
           ok: result.ok !== false,
-          source: "Windows runtime worker",
+          source: getWorkerDisplayName(worker),
           taskType: "capabilities",
           target: "/v1/capabilities",
           entries,
@@ -3230,7 +3259,7 @@ function WorkerEvidencePanel() {
       ? {
           checkedAt,
           ok: result.ok !== false,
-          source: "Windows runtime worker",
+          source: getWorkerDisplayName(worker),
           taskType: jobType,
           taskLabel,
           target: input.url || input.targetService || input.targetHost || worker.baseUrl,
@@ -3241,7 +3270,7 @@ function WorkerEvidencePanel() {
       : {
           checkedAt,
           ok: false,
-          source: "Windows runtime worker",
+          source: getWorkerDisplayName(worker),
           taskType: jobType,
           taskLabel,
           target: input.url || input.targetService || input.targetHost || worker.baseUrl,
@@ -3277,7 +3306,7 @@ function WorkerEvidencePanel() {
       setError({
         scope: "registry",
         code: "worker_auth_not_configured",
-        message: "Windows runtime worker may be stopped or token/config may be missing.",
+        message: `${getWorkerDisplayName(worker)} may be stopped or token/config may be missing.`,
       });
       return;
     }
@@ -3318,11 +3347,11 @@ function WorkerEvidencePanel() {
         return;
       }
 
-      if (!nextWorker || nextWorker.id !== "windows-runtime") {
-        setError({
-          scope: "registry",
-          code: "windows_runtime_unavailable",
-          message: "Windows runtime worker is not currently registered. It may be stopped or its registry entry may be missing.",
+    if (!nextWorker || nextWorker.id !== "windows-runtime") {
+      setError({
+        scope: "registry",
+        code: "windows_runtime_unavailable",
+        message: "Windows runtime worker is not currently registered. It may be stopped or its registry entry may be missing.",
         });
         return;
       }
@@ -3352,7 +3381,7 @@ function WorkerEvidencePanel() {
       setError({
         scope: "registry",
         code: "worker_auth_not_configured",
-        message: "Windows runtime worker may be stopped or token/config may be missing.",
+        message: `${getWorkerDisplayName(nextWorker)} may be stopped or token/config may be missing.`,
       });
     }
   }
@@ -3401,8 +3430,8 @@ function WorkerEvidencePanel() {
       <div className="panel-heading">
         <div>
           <span className="section-title">Workers</span>
-          <h2>Windows Runtime Worker</h2>
-          <p>Read-only operational evidence for Garage Admin V2 health checks. No restarts, writes, deletes, rebuilds, or shell access.</p>
+          <h2>Worker Evidence</h2>
+          <p>Read-only operational evidence for Garage Admin V2 and Fedora helper-backed checks. No restarts, writes, deletes, rebuilds, or shell access.</p>
         </div>
         <button type="button" className="mini-button" onClick={loadWorkers} disabled={Boolean(loadingAction)}>
           {loadingAction === "workers" ? "Refreshing..." : "Refresh"}
@@ -3439,8 +3468,8 @@ function WorkerEvidencePanel() {
             <div className="worker-summary-main">
               <div className="detail-header">
                 <div>
-                  <span className="detail-label">Windows runtime worker</span>
-                  <h3>{selectedWorker?.name || "Windows Runtime Worker"}</h3>
+                  <span className="detail-label">{selectedWorkerIsFedora ? "Fedora worker" : "Windows runtime worker"}</span>
+                  <h3>{selectedWorkerLabel}</h3>
                 </div>
                 <span className={`status-badge ${selectedWorkerEvidence.health ? (selectedWorkerEvidence.health.ok ? "status-completed" : "status-failed") : "status-unknown"}`}>
                   {selectedWorkerHealthLabel}
@@ -3450,8 +3479,8 @@ function WorkerEvidencePanel() {
               <div className="worker-summary-detail-grid">
                 <div className="detail-item">
                   <span className="detail-label">Name</span>
-                  <span className="detail-value" title={selectedWorker?.name || "Windows Runtime Worker"}>
-                    {selectedWorker?.name || "Windows Runtime Worker"}
+                  <span className="detail-value" title={selectedWorkerLabel}>
+                    {selectedWorkerLabel}
                   </span>
                 </div>
                 <div className="detail-item">
@@ -3544,31 +3573,95 @@ function WorkerEvidencePanel() {
               </span>
             </button>
 
-            <button
-              type="button"
-              className="worker-job-card"
-              onClick={runGarageHealthJob}
-              disabled={!selectedWorker || Boolean(loadingAction)}
-            >
-              <span className="detail-label">Check Garage Admin health via worker</span>
-              <span className="worker-job-card-copy">ping_url to http://127.0.0.1:4010/health</span>
-              <span className={`status-badge ${loadingAction === "ping_url" ? "status-executing" : "status-info"}`}>read-only</span>
-            </button>
+            {selectedWorkerIsWindows ? (
+              <>
+                <button
+                  type="button"
+                  className="worker-job-card"
+                  onClick={runGarageHealthJob}
+                  disabled={!selectedWorker || Boolean(loadingAction)}
+                >
+                  <span className="detail-label">Check Garage Admin health via worker</span>
+                  <span className="worker-job-card-copy">ping_url to http://127.0.0.1:4010/health</span>
+                  <span className={`status-badge ${loadingAction === "ping_url" ? "status-executing" : "status-info"}`}>read-only</span>
+                </button>
 
-            <button
-              type="button"
-              className="worker-job-card"
-              onClick={runSafePm2Job}
-              disabled={!selectedWorker || Boolean(loadingAction) || !selectedWorkerHasPm2Task}
-            >
-              <span className="detail-label">Fetch safe PM2 status</span>
-              <span className="worker-job-card-copy">
-                {selectedWorkerHasPm2Task ? "pm2_jlist read-only task" : "Not advertised by this worker"}
-              </span>
-              <span className={`status-badge ${selectedWorkerHasPm2Task ? "status-supported" : "status-unknown"}`}>
-                {selectedWorkerHasPm2Task ? "supported" : "hidden"}
-              </span>
-            </button>
+                <button
+                  type="button"
+                  className="worker-job-card"
+                  onClick={runSafePm2Job}
+                  disabled={!selectedWorker || Boolean(loadingAction) || !selectedWorkerHasPm2Task}
+                >
+                  <span className="detail-label">Fetch safe PM2 status</span>
+                  <span className="worker-job-card-copy">
+                    {selectedWorkerHasPm2Task ? "pm2_jlist read-only task" : "Not advertised by this worker"}
+                  </span>
+                  <span className={`status-badge ${selectedWorkerHasPm2Task ? "status-supported" : "status-unknown"}`}>
+                    {selectedWorkerHasPm2Task ? "supported" : "hidden"}
+                  </span>
+                </button>
+              </>
+            ) : null}
+
+            {selectedWorkerIsFedora ? (
+              <>
+                {selectedWorkerIsFedoraInfra ? (
+                  <button
+                    type="button"
+                    className="worker-job-card"
+                    onClick={() =>
+                      runWorkerJob(
+                        selectedWorker,
+                        "system_pulse",
+                        {
+                          targetService: selectedWorker.id,
+                        },
+                        {
+                          title: "Run Fedora system pulse",
+                        },
+                      )
+                    }
+                    disabled={!selectedWorker || Boolean(loadingAction)}
+                  >
+                    <span className="detail-label">Run system pulse</span>
+                    <span className="worker-job-card-copy">
+                      {selectedWorkerHasSystemPulseTask ? "system_pulse read-only task" : "Not advertised by this worker"}
+                    </span>
+                    <span className={`status-badge ${selectedWorkerHasSystemPulseTask ? "status-supported" : "status-unknown"}`}>
+                      {selectedWorkerHasSystemPulseTask ? "supported" : "hidden"}
+                    </span>
+                  </button>
+                ) : null}
+
+                {selectedWorkerIsFedoraBootstrap ? (
+                  <button
+                    type="button"
+                    className="worker-job-card"
+                    onClick={() =>
+                      runWorkerJob(
+                        selectedWorker,
+                        "templates",
+                        {
+                          targetService: selectedWorker.id,
+                        },
+                        {
+                          title: "Inspect templates",
+                        },
+                      )
+                    }
+                    disabled={!selectedWorker || Boolean(loadingAction)}
+                  >
+                    <span className="detail-label">Inspect templates</span>
+                    <span className="worker-job-card-copy">
+                      {selectedWorkerHasTemplatesTask ? "templates read-only task" : "Not advertised by this worker"}
+                    </span>
+                    <span className={`status-badge ${selectedWorkerHasTemplatesTask ? "status-supported" : "status-unknown"}`}>
+                      {selectedWorkerHasTemplatesTask ? "supported" : "hidden"}
+                    </span>
+                  </button>
+                ) : null}
+              </>
+            ) : null}
           </div>
 
           {error ? (
@@ -3584,7 +3677,9 @@ function WorkerEvidencePanel() {
             <div className="worker-evidence-feed-header">
               <div>
                 <span className="detail-label">Result provenance</span>
-                <p className="worker-evidence-feed-copy">Source: Windows runtime worker. Read-only evidence only. Timestamps reflect the last observed worker check or job result.</p>
+                <p className="worker-evidence-feed-copy">
+                  Source: {selectedWorkerLabel}. Read-only evidence only. Timestamps reflect the last observed worker check or job result.
+                </p>
               </div>
             </div>
 

@@ -1,4 +1,4 @@
-﻿const express = require("express");
+const express = require("express");
 const { getWorkers, getWorkerById, publicWorker } = require("../workerRegistry");
 
 const router = express.Router();
@@ -11,11 +11,15 @@ const ALLOWED_TASKS = new Set([
   "pm2_jlist",
   "tail_file",
   "system_pulse",
+  "templates",
   "systemd_status",
   "journal_tail",
   "podman_ps",
-  "docker_ps"
+  "docker_ps",
 ]);
+
+const FEDORA_HELPER_UNREACHABLE_MESSAGE =
+  "Fedora control-plane helper is unreachable from Windows. Check FEDORA_GARAGE_API_URL, FEDORA_GARAGE_API_KEY, and host reachability.";
 
 function redactError(value) {
   if (value == null) return value;
@@ -70,13 +74,33 @@ function ensureLocalOrPrivateUrl(worker) {
   }
 }
 
-async function callWorker(worker, token, path, options = {}) {
+function getWorkerRequestPath(worker, kind) {
+  if (worker.transport === "fedora-garage-helper") {
+    return `/admin/fedora-workers/${worker.id}/${kind}`;
+  }
+
+  if (kind === "health") {
+    return "/health";
+  }
+
+  if (kind === "capabilities") {
+    return "/v1/capabilities";
+  }
+
+  if (kind === "jobs") {
+    return "/v1/jobs";
+  }
+
+  throw workerError(500, "invalid_worker_request", "Unsupported worker request.");
+}
+
+async function callWorker(worker, token, kind, options = {}) {
   ensureLocalOrPrivateUrl(worker);
 
-  const url = `${worker.baseUrl.replace(/\/$/, "")}${path}`;
+  const url = `${worker.baseUrl.replace(/\/$/, "")}${getWorkerRequestPath(worker, kind)}`;
   const headers = {
     [worker.authHeader || "x-worker-auth"]: token,
-    ...(options.headers || {})
+    ...(options.headers || {}),
   };
 
   const controller = new AbortController();
@@ -87,24 +111,27 @@ async function callWorker(worker, token, path, options = {}) {
       method: options.method || "GET",
       headers,
       body: options.body,
-      signal: controller.signal
+      signal: controller.signal,
     });
 
     const payload = await response.json().catch(() => ({
       ok: false,
       errorCode: "invalid_worker_response",
-      error: "Worker did not return JSON."
+      error: "Worker did not return JSON.",
     }));
 
     return {
       httpStatus: response.status,
-      ...payload
+      ...payload,
     };
   } catch (error) {
+    const isTimeout = error?.name === "AbortError";
+    const isFedoraHelper = worker.transport === "fedora-garage-helper";
+
     return {
       ok: false,
-      errorCode: error.name === "AbortError" ? "worker_timeout" : "worker_request_failed",
-      error: redactError(error.message)
+      errorCode: isTimeout ? "worker_timeout" : "worker_request_failed",
+      error: isFedoraHelper && !isTimeout ? FEDORA_HELPER_UNREACHABLE_MESSAGE : redactError(error.message),
     };
   } finally {
     clearTimeout(timeout);
@@ -114,19 +141,19 @@ async function callWorker(worker, token, path, options = {}) {
 router.get("/", (_req, res) => {
   res.json({
     ok: true,
-    items: getWorkers().map(publicWorker)
+    items: getWorkers().map(publicWorker),
   });
 });
 
 router.get("/:id/health", async (req, res, next) => {
   try {
     const { worker, token } = requireWorker(req.params.id);
-    const result = await callWorker(worker, token, "/health", { timeoutMs: 8000 });
+    const result = await callWorker(worker, token, "health", { timeoutMs: 8000 });
 
     res.status(result.ok === false ? 502 : 200).json({
       ok: result.ok !== false,
       worker: publicWorker(worker),
-      result
+      result,
     });
   } catch (error) {
     next(error);
@@ -136,12 +163,12 @@ router.get("/:id/health", async (req, res, next) => {
 router.get("/:id/capabilities", async (req, res, next) => {
   try {
     const { worker, token } = requireWorker(req.params.id);
-    const result = await callWorker(worker, token, "/v1/capabilities", { timeoutMs: 8000 });
+    const result = await callWorker(worker, token, "capabilities", { timeoutMs: 8000 });
 
     res.status(result.ok === false ? 502 : 200).json({
       ok: result.ok !== false,
       worker: publicWorker(worker),
-      result
+      result,
     });
   } catch (error) {
     next(error);
@@ -163,22 +190,22 @@ router.post("/:id/jobs", async (req, res, next) => {
       taskType,
       targetHost: body.targetHost || worker.host,
       targetService: body.targetService || null,
-      input: body.input || {}
+      input: body.input || {},
     };
 
-    const result = await callWorker(worker, token, "/v1/jobs", {
+    const result = await callWorker(worker, token, "jobs", {
       method: "POST",
       timeoutMs: 30000,
       headers: {
-        "content-type": "application/json"
+        "content-type": "application/json",
       },
-      body: JSON.stringify(job)
+      body: JSON.stringify(job),
     });
 
     res.status(result.ok === false ? 422 : 200).json({
       ok: result.ok !== false,
       worker: publicWorker(worker),
-      result
+      result,
     });
   } catch (error) {
     next(error);

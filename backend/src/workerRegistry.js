@@ -1,4 +1,4 @@
-﻿function parseWorkerList() {
+function parseWorkerList() {
   const configured = process.env.WORKER_REGISTRY_JSON;
 
   if (configured) {
@@ -7,13 +7,20 @@
       if (Array.isArray(parsed)) {
         return parsed.map((worker) => ({
           ...worker,
-          registrySource: "WORKER_REGISTRY_JSON"
+          registrySource: "WORKER_REGISTRY_JSON",
         }));
       }
     } catch {
       // Fall through to default registry.
     }
   }
+
+  const fedoraGarageApiUrl = process.env.FEDORA_GARAGE_API_URL;
+  const fedoraAdminProxyUrl = process.env.FEDORA_ADMIN_PROXY_URL || "http://fedora.local:4000";
+  const fedoraWorkerBaseUrl = fedoraGarageApiUrl || fedoraAdminProxyUrl;
+  const fedoraWorkerAuthTokenEnv = fedoraGarageApiUrl ? "FEDORA_GARAGE_API_KEY" : "ADMIN_BRIDGE_TOKEN";
+  const fedoraWorkerAuthHeader = fedoraGarageApiUrl ? "X-API-KEY" : "x-aibry-auth";
+  const fedoraWorkerTransport = fedoraGarageApiUrl ? "fedora-garage-helper" : "fedora-admin-proxy";
 
   return [
     {
@@ -25,8 +32,36 @@
       authHeader: "x-worker-auth",
       authTokenEnv: "WINDOWS_WORKER_AUTH_TOKEN",
       description: "Read-only Windows PM2/runtime/repo evidence worker.",
-      registrySource: "built-in worker registry"
-    }
+      registrySource: "built-in worker registry",
+    },
+    {
+      id: "fedora-infra",
+      name: "Fedora Infra Worker",
+      host: "fedora",
+      role: "infra",
+      baseUrl: fedoraWorkerBaseUrl,
+      authHeader: fedoraWorkerAuthHeader,
+      authTokenEnv: fedoraWorkerAuthTokenEnv,
+      transport: fedoraWorkerTransport,
+      description: fedoraGarageApiUrl
+        ? "Read-only Fedora infra evidence via the Garage helper."
+        : "Read-only Fedora infra evidence via guarded admin-proxy routes.",
+      registrySource: "built-in worker registry",
+    },
+    {
+      id: "fedora-bootstrap",
+      name: "Fedora Bootstrap Worker",
+      host: "fedora",
+      role: "bootstrap",
+      baseUrl: fedoraWorkerBaseUrl,
+      authHeader: fedoraWorkerAuthHeader,
+      authTokenEnv: fedoraWorkerAuthTokenEnv,
+      transport: fedoraWorkerTransport,
+      description: fedoraGarageApiUrl
+        ? "Read-only Fedora bootstrap evidence via the Garage helper."
+        : "Read-only Fedora bootstrap evidence via guarded admin-proxy routes.",
+      registrySource: "built-in worker registry",
+    },
   ];
 }
 
@@ -39,7 +74,8 @@ function publicWorker(worker) {
     baseUrl: worker.baseUrl,
     description: worker.description,
     registrySource: worker.registrySource || "built-in worker registry",
-    authConfigured: Boolean(process.env[worker.authTokenEnv])
+    transport: worker.transport,
+    authConfigured: Boolean(process.env[worker.authTokenEnv]),
   };
 }
 
@@ -48,7 +84,7 @@ function getWorkers() {
     .filter((worker) => worker && worker.id && worker.baseUrl)
     .map((worker) => ({
       ...worker,
-      authHeader: worker.authHeader || "x-worker-auth"
+      authHeader: worker.authHeader || "x-worker-auth",
     }));
 }
 
@@ -59,5 +95,5 @@ function getWorkerById(id) {
 module.exports = {
   getWorkers,
   getWorkerById,
-  publicWorker
+  publicWorker,
 };
