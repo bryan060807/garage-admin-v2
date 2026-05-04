@@ -5236,7 +5236,7 @@ export default function App() {
           ))}
         </nav>
 
-        <div className="workspace-scroll">
+        <div className={`workspace-scroll workspace-scroll-tab-${activeWorkspaceTab}`}>
           <DisclosureSection
             title="Incidents"
             summary={`${incidentItems.length} incident${incidentItems.length === 1 ? "" : "s"}`}
@@ -5278,13 +5278,57 @@ export default function App() {
                   restarts, rebuilds, repairs, migrations, deletes, or writes.
                 </p>
               </div>
+              <WorkerEvidencePanel />
+            </section>
+          ) : activeWorkspaceTab === "assistant" ? (
+            <section className="workspace-tab-panel workspace-tab-panel--assistant">
+              <div className="workspace-tab-heading">
+                <span className="section-title">Assistant</span>
+                <h2>Assistant Workspace</h2>
+                <p>
+                  Use the assistant for grounded operator plans and explanations. Chat cannot execute restarts, approvals,
+                  file writes, destructive actions, or worker jobs.
+                </p>
+              </div>
+              <div className="workspace-tab-card-grid">
+                <article className="panel workspace-tab-card">
+                  <span className="detail-label">Current context</span>
+                  <h3>{selectedServiceRecord?.displayName || selectedService || "No service selected"}</h3>
+                  <p className="inline-note">
+                    {selectedServiceRecord
+                      ? selectedServiceHeaderSummary
+                      : "Select a service from the rail to ground assistant context."}
+                  </p>
+                  <div className="inline-badges">
+                    <span className={`status-badge ${statusClassName(selectedServiceStatus)}`}>
+                      {formatStatusLabel(selectedServiceStatus)}
+                    </span>
+                    <span className="status-badge status-info">{formatAssistantHostOwnership(selectedServiceRecord?.host) || "Host unknown"}</span>
+                  </div>
+                </article>
+                <article className="panel workspace-tab-card">
+                  <span className="detail-label">Assistant mode</span>
+                  <h3>{isAssistantExpanded ? "Expanded" : isAssistantDocked ? "Docked" : "Minimized"}</h3>
+                  <p className="inline-note">
+                    The expanded assistant keeps the dashboard available while giving chat more room for plans, lookup results, and evidence cards.
+                  </p>
+                  <div className="panel-actions">
+                    <button type="button" className="secondary-button" onClick={handleOpenAssistantExpanded}>
+                      Open Assistant
+                    </button>
+                    <button type="button" className="secondary-button" onClick={() => setAssistantMode(ASSISTANT_MODES.DOCKED)}>
+                      Dock Assistant
+                    </button>
+                  </div>
+                </article>
+              </div>
             </section>
           ) : (
           <SelectedServiceWorkspaceBoundary
             resetKey={`${selectedService || "none"}-${selectedServiceRecord?.lastSeen || "na"}`}
             serviceName={selectedServiceRecord?.displayName || selectedService || ""}
           >
-          <div className={`workspace-columns ${isAssistantMinimized ? "workspace-columns-assistant-minimized" : ""}`}>
+          <div className={`workspace-columns workspace-columns-tab-${activeWorkspaceTab} ${isAssistantMinimized ? "workspace-columns-assistant-minimized" : ""}`}>
             <div className="workspace-main-column">
           {selectedServiceRecord ? (
             <DisclosureSection
@@ -5662,7 +5706,6 @@ export default function App() {
             </div>
 
             <div className="workspace-side-column">
-              <WorkerEvidencePanel />
               <section
                 className={`ops-grid ${isAssistantMinimized ? "ops-grid-assistant-minimized" : ""}`}
                 ref={opsGridRef}
