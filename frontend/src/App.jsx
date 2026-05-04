@@ -60,6 +60,14 @@ const ASSISTANT_LAUNCHER_POSITION_META = {
     shortLabel: "BC",
   },
 };
+const WORKSPACE_TABS = Object.freeze([
+  { id: "overview", label: "Overview" },
+  { id: "actions", label: "Actions" },
+  { id: "workers", label: "Workers" },
+  { id: "assistant", label: "Assistant" },
+  { id: "evidence", label: "Logs / Evidence" },
+]);
+
 const ENABLE_EXPERIMENTAL_LAYOUT_CUSTOMIZATION = ["1", "true", "yes", "on"].includes(
   String(import.meta.env.VITE_ENABLE_EXPERIMENTAL_LAYOUT_CUSTOMIZATION || "").toLowerCase(),
 );
@@ -2944,6 +2952,7 @@ export default function App() {
   const [audit, setAudit] = useState([]);
   const [selectedService, setSelectedService] = useState(null);
   const [selectedIncidentId, setSelectedIncidentId] = useState(null);
+  const [activeWorkspaceTab, setActiveWorkspaceTab] = useState("overview");
   const [logs, setLogs] = useState(null);
   const [logsFetchedAt, setLogsFetchedAt] = useState(null);
   const [logFilter, setLogFilter] = useState("");
@@ -5213,6 +5222,20 @@ export default function App() {
             </div>
           )}
         </section>
+
+        <nav className="workspace-tabs" aria-label="Garage workspace tabs">
+          {WORKSPACE_TABS.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              className={`workspace-tab ${activeWorkspaceTab === tab.id ? "is-active" : ""}`}
+              onClick={() => setActiveWorkspaceTab(tab.id)}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </nav>
+
         <div className="workspace-scroll">
           <DisclosureSection
             title="Incidents"
@@ -5245,6 +5268,18 @@ export default function App() {
             </div>
           </DisclosureSection>
 
+          {activeWorkspaceTab === "workers" ? (
+            <section className="workspace-tab-panel workspace-tab-panel--workers">
+              <div className="workspace-tab-heading">
+                <span className="section-title">Workers</span>
+                <h2>Worker Evidence</h2>
+                <p>
+                  Read-only worker evidence stays separate from Service Actions. Workers collect proof, not approvals,
+                  restarts, rebuilds, repairs, migrations, deletes, or writes.
+                </p>
+              </div>
+            </section>
+          ) : (
           <SelectedServiceWorkspaceBoundary
             resetKey={`${selectedService || "none"}-${selectedServiceRecord?.lastSeen || "na"}`}
             serviceName={selectedServiceRecord?.displayName || selectedService || ""}
@@ -6211,6 +6246,7 @@ export default function App() {
             </div>
           </div>
           </SelectedServiceWorkspaceBoundary>
+          )}
         </div>
       </main>
 
