@@ -1,4 +1,4 @@
-const path = require("path");
+﻿const path = require("path");
 const fs = require("fs");
 const express = require("express");
 const cors = require("cors");
@@ -12,6 +12,7 @@ const serviceRoutes = require("./routes/services");
 const actionRoutes = require("./routes/actions");
 const chatRoutes = require("./routes/chat");
 const assistantRoutes = require("./routes/assistant");
+const workerRoutes = require("./routes/workers");
 
 const app = express();
 const frontendDistPath = path.resolve(__dirname, "../../frontend/dist");
@@ -44,6 +45,7 @@ app.use("/api/services", serviceRoutes);
 app.use("/api/actions", actionRoutes);
 app.use("/api/chat", chatRoutes);
 app.use("/api/assistant", assistantRoutes);
+app.use("/api/workers", workerRoutes);
 
 app.use(express.static(frontendDistPath));
 
@@ -71,3 +73,4 @@ app.use((error, _req, res, _next) => {
 app.listen(config.port, config.host, () => {
   console.log(`Garage Admin V2 backend listening on http://${config.host}:${config.port}`);
 });
+
