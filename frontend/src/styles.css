@@ -3111,6 +3111,43 @@ button {
   justify-content: space-between;
 }
 
+.worker-registry-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 0.75rem;
+}
+
+.worker-registry-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.85rem;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 0.9rem;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02));
+}
+
+.worker-registry-card.is-selected {
+  border-color: rgba(125, 211, 252, 0.38);
+  box-shadow: 0 0 0 1px rgba(14, 165, 233, 0.16) inset;
+}
+
+.worker-registry-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.worker-registry-card-copy {
+  color: var(--text-muted);
+  font-size: 0.86rem;
+  word-break: break-word;
+}
+
+.worker-registry-card-select {
+  align-self: flex-start;
+}
+
 .worker-evidence-select-label {
   display: flex;
   flex-direction: column;

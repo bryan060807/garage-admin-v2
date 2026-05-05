@@ -8,6 +8,7 @@ const ALLOWED_TASKS = new Set([
   "git_status",
   "git_diff_stat",
   "node_check",
+  "package_scripts",
   "pm2_jlist",
   "tail_file",
   "system_pulse",

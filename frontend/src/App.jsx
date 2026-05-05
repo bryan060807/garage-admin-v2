@@ -2524,6 +2524,9 @@ function createWorkerEvidenceSnapshot() {
   };
 }
 
+const FEDORA_REPO_BOOTSTRAP_PATH = "/home/aibry/projects/aibry-worker-bootstrap";
+const FEDORA_REPO_NODE_CHECK_FILE = "/home/aibry/projects/aibry-worker-bootstrap/src/server.js";
+
 function getWorkerDisplayName(worker) {
   return readServiceString(worker?.name, worker?.id, "Worker");
 }
@@ -2728,6 +2731,18 @@ function summarizeWorkerCapabilities(entries) {
     supportedCount,
     preview: list.slice(0, 6),
   };
+}
+
+function getWorkerJobTarget(worker, input = {}) {
+  return readServiceString(
+    input.repoPath,
+    input.filePath,
+    input.targetService,
+    input.targetHost,
+    input.url,
+    worker?.baseUrl,
+    "",
+  );
 }
 
 function supportsSafePm2Task(entries) {
@@ -3018,6 +3033,7 @@ function WorkerEvidencePanel() {
   const selectedWorkerIsFedora = selectedWorker?.host === "fedora";
   const selectedWorkerIsFedoraInfra = selectedWorker?.id === "fedora-infra";
   const selectedWorkerIsFedoraBootstrap = selectedWorker?.id === "fedora-bootstrap";
+  const selectedWorkerIsFedoraRepo = selectedWorker?.id === "fedora-repo";
   const selectedWorkerEvidence = selectedWorker ? workerEvidence[selectedWorker.id] || createWorkerEvidenceSnapshot() : createWorkerEvidenceSnapshot();
   const selectedWorkerCapabilities = Array.isArray(selectedWorkerEvidence.capabilities?.entries)
     ? selectedWorkerEvidence.capabilities.entries
@@ -3026,6 +3042,10 @@ function WorkerEvidencePanel() {
   const selectedWorkerHasPm2Task = supportsSafePm2Task(selectedWorkerCapabilities);
   const selectedWorkerHasSystemPulseTask = selectedWorkerIsFedoraInfra || supportsWorkerTask(selectedWorkerCapabilities, /system[_-\s]?pulse/i);
   const selectedWorkerHasTemplatesTask = selectedWorkerIsFedoraBootstrap || supportsWorkerTask(selectedWorkerCapabilities, /\btemplates?\b/i);
+  const selectedWorkerHasGitStatusTask = selectedWorkerIsFedoraRepo || supportsWorkerTask(selectedWorkerCapabilities, /\bgit[_-\s]?status\b/i);
+  const selectedWorkerHasGitDiffStatTask = selectedWorkerIsFedoraRepo || supportsWorkerTask(selectedWorkerCapabilities, /\bgit[_-\s]?diff[_-\s]?stat\b/i);
+  const selectedWorkerHasNodeCheckTask = selectedWorkerIsFedoraRepo || supportsWorkerTask(selectedWorkerCapabilities, /\bnode[_-\s]?check\b/i);
+  const selectedWorkerHasPackageScriptsTask = selectedWorkerIsFedoraRepo || supportsWorkerTask(selectedWorkerCapabilities, /\bpackage[_-\s]?scripts\b/i);
   const selectedWorkerHealthSummary = selectedWorkerEvidence.health?.summary || "Not checked yet.";
   const selectedWorkerHealthLabel = selectedWorkerEvidence.health
     ? selectedWorkerEvidence.health.ok
@@ -3247,6 +3267,7 @@ function WorkerEvidencePanel() {
       targetService: input.targetService || null,
       input,
     };
+    const target = getWorkerJobTarget(worker, input);
     const response = await callWorkerRoute(worker, "/jobs", {
       method: "POST",
       body,
@@ -3262,7 +3283,7 @@ function WorkerEvidencePanel() {
           source: getWorkerDisplayName(worker),
           taskType: jobType,
           taskLabel,
-          target: input.url || input.targetService || input.targetHost || worker.baseUrl,
+          target,
           summary: jobSummary.outcome,
           detail: jobSummary.detail,
           error: result.ok === false ? normalizeWorkerError(result, "worker_job_failed", "Job failed.") : null,
@@ -3273,7 +3294,7 @@ function WorkerEvidencePanel() {
           source: getWorkerDisplayName(worker),
           taskType: jobType,
           taskLabel,
-          target: input.url || input.targetService || input.targetHost || worker.baseUrl,
+          target,
           summary: response.error?.code || "worker_job_failed",
           detail: response.error?.message || "Job failed.",
           error: response.error,
@@ -3421,6 +3442,56 @@ function WorkerEvidencePanel() {
     );
   }
 
+  function runFedoraRepoJob(jobType, input = {}, title = "") {
+    if (!selectedWorker || !selectedWorkerIsFedoraRepo) {
+      return;
+    }
+
+    return runWorkerJob(selectedWorker, jobType, input, {
+      title,
+    });
+  }
+
+  function runFedoraRepoGitStatusJob() {
+    return runFedoraRepoJob(
+      "git_status",
+      {
+        repoPath: FEDORA_REPO_BOOTSTRAP_PATH,
+      },
+      "Fetch Fedora repo git status",
+    );
+  }
+
+  function runFedoraRepoPackageScriptsJob() {
+    return runFedoraRepoJob(
+      "package_scripts",
+      {
+        repoPath: FEDORA_REPO_BOOTSTRAP_PATH,
+      },
+      "Inspect package scripts",
+    );
+  }
+
+  function runFedoraRepoGitDiffStatJob() {
+    return runFedoraRepoJob(
+      "git_diff_stat",
+      {
+        repoPath: FEDORA_REPO_BOOTSTRAP_PATH,
+      },
+      "Fetch Fedora repo diff stat",
+    );
+  }
+
+  function runFedoraRepoNodeCheckJob() {
+    return runFedoraRepoJob(
+      "node_check",
+      {
+        filePath: FEDORA_REPO_NODE_CHECK_FILE,
+      },
+      "Run Node check on Fedora repo file",
+    );
+  }
+
   useEffect(() => {
     loadWorkers().catch(() => {});
   }, []);
@@ -3440,6 +3511,35 @@ function WorkerEvidencePanel() {
 
       {workers.length ? (
         <>
+          <div className="worker-registry-grid">
+            {workers.map((worker) => {
+              const isSelected = worker.id === selectedWorker?.id;
+
+              return (
+                <article key={worker.id} className={`worker-registry-card ${isSelected ? "is-selected" : ""}`}>
+                  <div className="detail-header">
+                    <div>
+                      <span className="detail-label">{worker.id === "fedora-repo" ? "Fedora repo worker" : getWorkerStateLine(worker) || "Worker"}</span>
+                      <h3>{getWorkerDisplayName(worker)}</h3>
+                    </div>
+                    <span className={`status-badge ${worker.authConfigured ? "status-completed" : "status-failed"}`}>{worker.authConfigured ? "auth configured" : "auth missing"}</span>
+                  </div>
+                  <div className="worker-registry-card-meta">
+                    <span className="status-badge status-info">{worker.host}</span>
+                    <span className="status-badge status-info">{worker.role}</span>
+                    <span className="status-badge status-info">{getWorkerRegistrySource(worker)}</span>
+                  </div>
+                  <div className="worker-registry-card-copy" title={worker.baseUrl || ""}>
+                    {worker.baseUrl || "Not configured"}
+                  </div>
+                  <button type="button" className="mini-button worker-registry-card-select" onClick={() => setSelectedWorkerId(worker.id)}>
+                    {isSelected ? "Selected" : "Select"}
+                  </button>
+                </article>
+              );
+            })}
+          </div>
+
           <div className="worker-evidence-toolbar">
             <label className="worker-evidence-select-label">
               <span className="detail-label">Worker</span>
@@ -3468,7 +3568,7 @@ function WorkerEvidencePanel() {
             <div className="worker-summary-main">
               <div className="detail-header">
                 <div>
-                  <span className="detail-label">{selectedWorkerIsFedora ? "Fedora worker" : "Windows runtime worker"}</span>
+                  <span className="detail-label">{selectedWorkerIsFedoraRepo ? "Fedora repo worker" : selectedWorkerIsFedora ? "Fedora worker" : "Windows runtime worker"}</span>
                   <h3>{selectedWorkerLabel}</h3>
                 </div>
                 <span className={`status-badge ${selectedWorkerEvidence.health ? (selectedWorkerEvidence.health.ok ? "status-completed" : "status-failed") : "status-unknown"}`}>
@@ -3662,6 +3762,62 @@ function WorkerEvidencePanel() {
                 ) : null}
               </>
             ) : null}
+
+            {selectedWorkerIsFedoraRepo ? (
+              <>
+                <button
+                  type="button"
+                  className="worker-job-card"
+                  onClick={runFedoraRepoGitStatusJob}
+                  disabled={!selectedWorker || Boolean(loadingAction) || !selectedWorkerHasGitStatusTask}
+                >
+                  <span className="detail-label">Git status</span>
+                  <span className="worker-job-card-copy">{FEDORA_REPO_BOOTSTRAP_PATH}</span>
+                  <span className={`status-badge ${selectedWorkerHasGitStatusTask ? "status-supported" : "status-unknown"}`}>
+                    {selectedWorkerHasGitStatusTask ? "supported" : "hidden"}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  className="worker-job-card"
+                  onClick={runFedoraRepoPackageScriptsJob}
+                  disabled={!selectedWorker || Boolean(loadingAction) || !selectedWorkerHasPackageScriptsTask}
+                >
+                  <span className="detail-label">Package scripts</span>
+                  <span className="worker-job-card-copy">{FEDORA_REPO_BOOTSTRAP_PATH}</span>
+                  <span className={`status-badge ${selectedWorkerHasPackageScriptsTask ? "status-supported" : "status-unknown"}`}>
+                    {selectedWorkerHasPackageScriptsTask ? "supported" : "hidden"}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  className="worker-job-card"
+                  onClick={runFedoraRepoGitDiffStatJob}
+                  disabled={!selectedWorker || Boolean(loadingAction) || !selectedWorkerHasGitDiffStatTask}
+                >
+                  <span className="detail-label">Git diff stat</span>
+                  <span className="worker-job-card-copy">{FEDORA_REPO_BOOTSTRAP_PATH}</span>
+                  <span className={`status-badge ${selectedWorkerHasGitDiffStatTask ? "status-supported" : "status-unknown"}`}>
+                    {selectedWorkerHasGitDiffStatTask ? "supported" : "hidden"}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  className="worker-job-card"
+                  onClick={runFedoraRepoNodeCheckJob}
+                  disabled={!selectedWorker || Boolean(loadingAction) || !selectedWorkerHasNodeCheckTask}
+                >
+                  <span className="detail-label">Node check</span>
+                  <span className="worker-job-card-copy">{FEDORA_REPO_NODE_CHECK_FILE}</span>
+                  <span className={`status-badge ${selectedWorkerHasNodeCheckTask ? "status-supported" : "status-unknown"}`}>
+                    {selectedWorkerHasNodeCheckTask ? "supported" : "hidden"}
+                  </span>
+                </button>
+              </>
+            ) : null}
           </div>
 
           {error ? (
@@ -3674,14 +3830,14 @@ function WorkerEvidencePanel() {
           {workerUnavailableMessage ? <div className="empty-state worker-unavailable-note">{workerUnavailableMessage}</div> : null}
 
           <div className="worker-evidence-feed">
-            <div className="worker-evidence-feed-header">
-              <div>
-                <span className="detail-label">Result provenance</span>
-                <p className="worker-evidence-feed-copy">
-                  Source: {selectedWorkerLabel}. Read-only evidence only. Timestamps reflect the last observed worker check or job result.
-                </p>
+              <div className="worker-evidence-feed-header">
+                <div>
+                  <span className="detail-label">Result provenance</span>
+                  <p className="worker-evidence-feed-copy">
+                  Source: {selectedWorkerLabel}. Read-only evidence only. Timestamps reflect the last observed worker check or job result. Fedora repo jobs use fixed safe paths only.
+                  </p>
+                </div>
               </div>
-            </div>
 
             {selectedWorkerEvidence.health ? (
               <article className="worker-evidence-record">

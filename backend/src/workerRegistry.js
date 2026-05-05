@@ -62,6 +62,18 @@ function parseWorkerList() {
         : "Read-only Fedora bootstrap evidence via guarded admin-proxy routes.",
       registrySource: "built-in worker registry",
     },
+    {
+      id: "fedora-repo",
+      name: "Fedora Repo Worker",
+      host: "fedora",
+      role: "repository",
+      baseUrl: fedoraGarageApiUrl,
+      authHeader: "X-API-KEY",
+      authTokenEnv: "FEDORA_GARAGE_API_KEY",
+      transport: "fedora-garage-helper",
+      description: "Read-only Fedora repository evidence via the Garage helper.",
+      registrySource: "built-in worker registry",
+    },
   ];
 }
 
