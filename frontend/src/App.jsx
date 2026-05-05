@@ -2492,13 +2492,13 @@ function getHealthStatusSummary(healthResult) {
 
   if (healthResult.mode === "bridge-health") {
     return `${healthResult.ok ? "Bridge OK" : "Bridge attention"}${
-      healthResult.status ? ` Â· HTTP ${healthResult.status}` : ""
+      healthResult.status ? ` - HTTP ${healthResult.status}` : ""
     }`;
   }
 
   if (healthResult.mode === "local-url") {
     return `${healthResult.ok ? "Reachable" : "Reachability failed"}${
-      healthResult.status ? ` Â· HTTP ${healthResult.status}` : ""
+      healthResult.status ? ` - HTTP ${healthResult.status}` : ""
     }`;
   }
 
@@ -2507,11 +2507,11 @@ function getHealthStatusSummary(healthResult) {
   }
 
   if (healthResult.mode === "status-only") {
-    const pm2Status = healthResult.verification?.pm2Status ? ` Â· PM2 ${healthResult.verification.pm2Status}` : "";
+    const pm2Status = healthResult.verification?.pm2Status ? ` - PM2 ${healthResult.verification.pm2Status}` : "";
     return `${healthResult.ok ? "Status only" : "Status alert"}${pm2Status}`;
   }
 
-  return `${healthResult.ok ? "OK" : "Attention"}${healthResult.status ? ` Â· HTTP ${healthResult.status}` : ""}`;
+  return `${healthResult.ok ? "OK" : "Attention"}${healthResult.status ? ` - HTTP ${healthResult.status}` : ""}`;
 }
 
 function createWorkerEvidenceSnapshot() {
@@ -2812,7 +2812,7 @@ function summarizeWorkerHealthResult(result) {
     parts.push(message);
   }
 
-  return parts.length ? parts.join(" Â· ") : "Healthy.";
+  return parts.length ? parts.join(" - ") : "Healthy.";
 }
 
 function summarizeWorkerJobResult(result, taskType) {
@@ -2826,12 +2826,19 @@ function summarizeWorkerJobResult(result, taskType) {
   if (result.ok === false) {
     return {
       outcome: readServiceString(result.errorCode, "worker_request_failed"),
-      detail: readServiceString(result.error, result.message, "Job failed."),
+      detail: formatCappedWorkerEvidence(readServiceString(result.error, result.message, "Job failed.")),
     };
   }
 
   const outcome = readServiceString(result.message, result.summary, result.status, "Completed.");
-  const detail = readServiceString(result.result, result.output, result.detail, formatWorkerTaskLabel(taskType));
+  const detail = formatCappedWorkerEvidence(
+    result.result ??
+      result.output ??
+      result.stdout ??
+      result.stderr ??
+      result.detail ??
+      readServiceString(result.message, formatWorkerTaskLabel(taskType)),
+  );
 
   return {
     outcome,
@@ -2877,12 +2884,20 @@ function getRepoEvidenceFreshness(checkedAt, now = Date.now()) {
     return {
       bucket: "unknown",
       label: "unknown",
-      detail: "No successful fetch timestamp yet.",
+      detail: "Not checked yet.",
     };
   }
 
   const ageMs = Math.max(0, now - timestamp);
   const ageMinutes = Math.max(1, Math.round(ageMs / 60000));
+
+  if (ageMs < 60000) {
+    return {
+      bucket: "fresh",
+      label: "just now",
+      detail: "checked just now",
+    };
+  }
 
   if (ageMs <= FEDORA_REPO_EVIDENCE_FRESH_MS) {
     return {
@@ -2952,6 +2967,10 @@ function formatCappedRepoEvidence(value, limit = FEDORA_REPO_EVIDENCE_OUTPUT_LIM
   }
 
   return `${text.slice(0, limit)}\n... output capped`;
+}
+
+function formatCappedWorkerEvidence(value, limit = FEDORA_REPO_EVIDENCE_OUTPUT_LIMIT) {
+  return formatCappedRepoEvidence(value, limit);
 }
 
 function pickRepoEvidenceDetail(result, taskType) {
@@ -3048,6 +3067,7 @@ function createRepoEvidenceRecord(task, status = "not_checked", extras = {}) {
 function RepositoryEvidencePanel() {
   const [registryWorker, setRegistryWorker] = useState(null);
   const [registryCheckedAt, setRegistryCheckedAt] = useState(null);
+  const [freshnessNow, setFreshnessNow] = useState(() => Date.now());
   const [records, setRecords] = useState(() =>
     Object.fromEntries(FEDORA_REPO_EVIDENCE_TASKS.map((task) => [task.id, createRepoEvidenceRecord(task)])),
   );
@@ -3063,7 +3083,7 @@ function RepositoryEvidencePanel() {
     .filter(Number.isFinite)
     .sort((a, b) => b - a)[0];
   const latestFreshness = latestCheckedAt
-    ? getRepoEvidenceFreshness(new Date(latestCheckedAt).toISOString())
+    ? getRepoEvidenceFreshness(new Date(latestCheckedAt).toISOString(), freshnessNow)
     : null;
 
   async function loadRepoWorkerRegistry({ quiet = false } = {}) {
@@ -3087,6 +3107,7 @@ function RepositoryEvidencePanel() {
 
       setRegistryWorker(repoWorker);
       setRegistryCheckedAt(checkedAt);
+      setFreshnessNow(Date.now());
 
       if (!repoWorker) {
         setError({
@@ -3108,6 +3129,8 @@ function RepositoryEvidencePanel() {
         code: "worker_registry_failed",
         message: requestError.message || "Worker registry request failed.",
       };
+      setRegistryWorker(null);
+      setRegistryCheckedAt(null);
       setError(nextError);
       return null;
     } finally {
@@ -3198,6 +3221,7 @@ function RepositoryEvidencePanel() {
     }));
 
     const checkedAt = new Date().toISOString();
+    setFreshnessNow(Date.now());
 
     try {
       const { response, data, result } = await callRepoEvidenceRoute(task);
@@ -3273,6 +3297,14 @@ function RepositoryEvidencePanel() {
 
   useEffect(() => {
     loadRepoWorkerRegistry().catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setFreshnessNow(Date.now());
+    }, 30000);
+
+    return () => clearInterval(timer);
   }, []);
 
   return (
@@ -3361,7 +3393,7 @@ function RepositoryEvidencePanel() {
                 {groupTasks.map((task) => {
                   const record = records[task.id] || createRepoEvidenceRecord(task);
                   const hasChecked = Boolean(record.checkedAt);
-                  const freshness = hasChecked ? getRepoEvidenceFreshness(record.checkedAt) : null;
+                  const freshness = hasChecked ? getRepoEvidenceFreshness(record.checkedAt, freshnessNow) : null;
                   const isLoading = loadingId === task.id || (loadingId === "batch" && record.status === "loading");
                   const status = isLoading ? "loading" : hasChecked ? record.status : "not_checked";
 
@@ -4653,7 +4685,7 @@ function WorkerEvidencePanel() {
                         <span className="detail-value">{jobResult.summary}</span>
                       </div>
                     </div>
-                    <p className="worker-evidence-record-copy">{jobResult.detail}</p>
+                    {jobResult.detail ? <pre className="repo-evidence-output">{jobResult.detail}</pre> : null}
                     {jobResult.error ? (
                       <p className="worker-evidence-record-error">
                         {jobResult.error.code}: {jobResult.error.message}
