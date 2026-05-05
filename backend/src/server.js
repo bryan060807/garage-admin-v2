@@ -11,6 +11,7 @@ const bridgeRoutes = require("./routes/bridge");
 const serviceRoutes = require("./routes/services");
 const actionRoutes = require("./routes/actions");
 const chatRoutes = require("./routes/chat");
+const chatkitRoutes = require("./routes/chatkit");
 const assistantRoutes = require("./routes/assistant");
 const workerRoutes = require("./routes/workers");
 
@@ -44,6 +45,7 @@ app.use("/api/bridge", bridgeRoutes);
 app.use("/api/services", serviceRoutes);
 app.use("/api/actions", actionRoutes);
 app.use("/api/chat", chatRoutes);
+app.use("/api/chatkit", chatkitRoutes);
 app.use("/api/assistant", assistantRoutes);
 app.use("/api/workers", workerRoutes);
 

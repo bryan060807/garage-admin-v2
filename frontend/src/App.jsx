@@ -4751,6 +4751,9 @@ export default function App() {
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState(null);
   const [messages, setMessages] = useState([]);
+  const [chatkitLoading, setChatkitLoading] = useState(false);
+  const [chatkitResult, setChatkitResult] = useState(null);
+  const [chatkitError, setChatkitError] = useState(null);
   const [assistantSelection, setAssistantSelection] = useState(null);
   const [activeAssistantPlanChipId, setActiveAssistantPlanChipId] = useState("");
   const [input, setInput] = useState("");
@@ -6366,6 +6369,42 @@ export default function App() {
     submitChatMessage(prompt).catch(() => {});
   }
 
+  async function runChatKitProbe(kind) {
+    if (chatkitLoading) {
+      return;
+    }
+
+    const endpoint = kind === "proof" ? "/api/chatkit/proof-of-life" : "/api/chatkit/status";
+    const label = kind === "proof" ? "Proof of life" : "Status";
+
+    setChatkitLoading(true);
+    setChatkitError(null);
+
+    try {
+      const response = await fetch(endpoint, {
+        method: kind === "proof" ? "POST" : "GET",
+        headers: {
+          Accept: "application/json",
+        },
+      });
+      const data = await response.json();
+
+      if (!response.ok || data?.ok !== true) {
+        throw new Error(data?.error?.message || data?.error || `${label} check failed`);
+      }
+
+      setChatkitResult({
+        ...data,
+        checkedAt: new Date().toISOString(),
+        label,
+      });
+    } catch (error) {
+      setChatkitError(error.message || `${label} check failed`);
+    } finally {
+      setChatkitLoading(false);
+    }
+  }
+
   function handleAssistantPlanChip(chipId) {
     setActiveAssistantPlanChipId((current) => (current === chipId ? "" : chipId));
   }
@@ -7085,6 +7124,82 @@ export default function App() {
                   </div>
                 </article>
               </div>
+              <section className="panel chatkit-proof-card" aria-labelledby="chatkit-proof-heading">
+                <div className="chatkit-proof-header">
+                  <div>
+                    <span className="detail-label">Experimental ChatKit</span>
+                    <h3 id="chatkit-proof-heading">Proof of Life</h3>
+                  </div>
+                  <span className="status-badge status-info">Prep only</span>
+                </div>
+                <p className="inline-note">
+                  Experimental ChatKit prep is separate from Service Actions. It can check the local prep route and configuration only:
+                  it cannot restart, approve, write, run shell, call workers, or bypass Service Actions.
+                </p>
+                <div className="panel-actions">
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => runChatKitProbe("status")}
+                    disabled={chatkitLoading}
+                  >
+                    {chatkitLoading ? "Checking..." : "Check status"}
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => runChatKitProbe("proof")}
+                    disabled={chatkitLoading}
+                  >
+                    {chatkitLoading ? "Checking..." : "Proof of life"}
+                  </button>
+                </div>
+                {chatkitError ? <div className="banner error-banner">ChatKit prep check failed: {chatkitError}</div> : null}
+                {chatkitResult ? (
+                  <div className="chatkit-proof-result">
+                    <div className="detail-grid">
+                      <div className="detail-item">
+                        <span className="detail-label">Check</span>
+                        <span className="detail-value">{chatkitResult.label}</span>
+                      </div>
+                      <div className="detail-item">
+                        <span className="detail-label">Status</span>
+                        <span className="detail-value">{chatkitResult.status || "unknown"}</span>
+                      </div>
+                      <div className="detail-item">
+                        <span className="detail-label">Mode</span>
+                        <span className="detail-value">{chatkitResult.mode || "prep"}</span>
+                      </div>
+                      <div className="detail-item">
+                        <span className="detail-label">Checked</span>
+                        <span className="detail-value">{formatCreatedAt(chatkitResult.checkedAt)}</span>
+                      </div>
+                    </div>
+                    {chatkitResult.proofOfLife?.message ? (
+                      <p className="inline-note chatkit-proof-message">{chatkitResult.proofOfLife.message}</p>
+                    ) : null}
+                    {chatkitResult.error ? (
+                      <p className="known-failure">
+                        {chatkitResult.error.code}: {chatkitResult.error.message}
+                      </p>
+                    ) : null}
+                    <div className="assistant-context-facts">
+                      <span className="assistant-context-fact">
+                        <strong>Experiment:</strong>{" "}
+                        {chatkitResult.configured?.experimentEnabled ? "enabled" : "disabled"}
+                      </span>
+                      <span className="assistant-context-fact">
+                        <strong>OpenAI key:</strong>{" "}
+                        {chatkitResult.configured?.openaiApiKeyConfigured ? "configured server-side" : "not configured"}
+                      </span>
+                      <span className="assistant-context-fact">
+                        <strong>Workflow:</strong>{" "}
+                        {chatkitResult.configured?.workflowConfigured ? "configured server-side" : "not configured"}
+                      </span>
+                    </div>
+                  </div>
+                ) : null}
+              </section>
             </section>
           ) : (
           <SelectedServiceWorkspaceBoundary
