@@ -2526,6 +2526,123 @@ function createWorkerEvidenceSnapshot() {
 
 const FEDORA_REPO_BOOTSTRAP_PATH = "/home/aibry/projects/aibry-worker-bootstrap";
 const FEDORA_REPO_NODE_CHECK_FILE = "/home/aibry/projects/aibry-worker-bootstrap/src/server.js";
+const FEDORA_REPO_WORKER_ID = "fedora-repo";
+const FEDORA_REPO_EVIDENCE_FRESH_MS = 5 * 60 * 1000;
+const FEDORA_REPO_EVIDENCE_AGING_MS = 15 * 60 * 1000;
+const FEDORA_REPO_EVIDENCE_OUTPUT_LIMIT = 900;
+const FEDORA_REPO_EVIDENCE_REPO_TARGETS = [
+  {
+    id: "bootstrap",
+    label: "Worker Bootstrap",
+    path: "/home/aibry/projects/aibry-worker-bootstrap",
+  },
+  {
+    id: "repo-worker",
+    label: "Fedora Repo Worker",
+    path: "/home/aibry/projects/aibry-fedora-repo-worker",
+  },
+];
+const FEDORA_REPO_EVIDENCE_FILE_TARGETS = [
+  {
+    id: "bootstrap-server",
+    label: "Bootstrap server.js",
+    path: "/home/aibry/projects/aibry-worker-bootstrap/src/server.js",
+  },
+  {
+    id: "repo-worker-server",
+    label: "Repo worker server.js",
+    path: "/home/aibry/projects/aibry-fedora-repo-worker/src/server.js",
+  },
+];
+const FEDORA_REPO_EVIDENCE_TASKS = [
+  {
+    id: "health",
+    label: "Worker health",
+    taskType: "health",
+    route: "/health",
+    method: "GET",
+    targetLabel: "fedora-repo worker",
+    target: "/api/workers/fedora-repo/health",
+  },
+  {
+    id: "capabilities",
+    label: "Capabilities",
+    taskType: "capabilities",
+    route: "/capabilities",
+    method: "GET",
+    targetLabel: "fedora-repo worker",
+    target: "/api/workers/fedora-repo/capabilities",
+  },
+  ...FEDORA_REPO_EVIDENCE_REPO_TARGETS.flatMap((target) => [
+    {
+      id: `${target.id}-git-status`,
+      label: "Git status",
+      taskType: "git_status",
+      targetLabel: target.label,
+      target: target.path,
+      input: { repoPath: target.path },
+    },
+    {
+      id: `${target.id}-git-diff-stat`,
+      label: "Git diff stat",
+      taskType: "git_diff_stat",
+      targetLabel: target.label,
+      target: target.path,
+      input: { repoPath: target.path },
+    },
+    {
+      id: `${target.id}-package-scripts`,
+      label: "Package scripts",
+      taskType: "package_scripts",
+      targetLabel: target.label,
+      target: target.path,
+      input: { repoPath: target.path },
+    },
+  ]),
+  ...FEDORA_REPO_EVIDENCE_FILE_TARGETS.map((target) => ({
+    id: `${target.id}-node-check`,
+    label: "Node check",
+    taskType: "node_check",
+    targetLabel: target.label,
+    target: target.path,
+    input: { filePath: target.path },
+  })),
+];
+const FEDORA_REPO_EVIDENCE_GROUPS = [
+  {
+    id: "worker-route",
+    label: "Worker route / fedora-repo worker",
+    target: "/api/workers/fedora-repo",
+    taskIds: ["health", "capabilities"],
+  },
+  {
+    id: "bootstrap-repo",
+    label: "Worker Bootstrap repo",
+    target: "/home/aibry/projects/aibry-worker-bootstrap",
+    taskIds: ["bootstrap-git-status", "bootstrap-git-diff-stat", "bootstrap-package-scripts"],
+  },
+  {
+    id: "bootstrap-server",
+    label: "Worker Bootstrap server.js",
+    target: "/home/aibry/projects/aibry-worker-bootstrap/src/server.js",
+    taskIds: ["bootstrap-server-node-check"],
+  },
+  {
+    id: "repo-worker-repo",
+    label: "Fedora Repo Worker repo",
+    target: "/home/aibry/projects/aibry-fedora-repo-worker",
+    taskIds: ["repo-worker-git-status", "repo-worker-git-diff-stat", "repo-worker-package-scripts"],
+  },
+  {
+    id: "repo-worker-server",
+    label: "Fedora Repo Worker server.js",
+    target: "/home/aibry/projects/aibry-fedora-repo-worker/src/server.js",
+    taskIds: ["repo-worker-server-node-check"],
+  },
+];
+const FEDORA_REPO_EVIDENCE_TASK_BY_ID = Object.fromEntries(
+  FEDORA_REPO_EVIDENCE_TASKS.map((task) => [task.id, task]),
+);
 
 function getWorkerDisplayName(worker) {
   return readServiceString(worker?.name, worker?.id, "Worker");
@@ -2751,6 +2868,564 @@ function supportsSafePm2Task(entries) {
 
 function supportsWorkerTask(entries, taskPattern) {
   return Array.isArray(entries) && entries.some((entry) => taskPattern.test(`${entry.key || ""} ${entry.label || ""} ${entry.detail || ""}`));
+}
+
+function getRepoEvidenceFreshness(checkedAt, now = Date.now()) {
+  const timestamp = new Date(checkedAt).getTime();
+
+  if (!Number.isFinite(timestamp)) {
+    return {
+      bucket: "unknown",
+      label: "unknown",
+      detail: "No successful fetch timestamp yet.",
+    };
+  }
+
+  const ageMs = Math.max(0, now - timestamp);
+  const ageMinutes = Math.max(1, Math.round(ageMs / 60000));
+
+  if (ageMs <= FEDORA_REPO_EVIDENCE_FRESH_MS) {
+    return {
+      bucket: "fresh",
+      label: "fresh",
+      detail: `checked ${ageMinutes} min ago`,
+    };
+  }
+
+  if (ageMs <= FEDORA_REPO_EVIDENCE_AGING_MS) {
+    return {
+      bucket: "aging",
+      label: "aging",
+      detail: `checked ${ageMinutes} min ago`,
+    };
+  }
+
+  return {
+    bucket: "stale",
+    label: "stale",
+    detail: `checked ${ageMinutes} min ago`,
+  };
+}
+
+function formatRepoEvidenceCheckedTime(value) {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return "unknown time";
+  }
+
+  return date.toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function getRepoEvidenceStatusClass(status) {
+  if (status === "loading") {
+    return "status-executing";
+  }
+
+  if (status === "ok") {
+    return "status-completed";
+  }
+
+  if (status === "warning") {
+    return "status-warning";
+  }
+
+  if (status === "blocked" || status === "error") {
+    return "status-failed";
+  }
+
+  return "status-unknown";
+}
+
+function formatCappedRepoEvidence(value, limit = FEDORA_REPO_EVIDENCE_OUTPUT_LIMIT) {
+  if (value == null || value === "") {
+    return "";
+  }
+
+  const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+
+  if (text.length <= limit) {
+    return text;
+  }
+
+  return `${text.slice(0, limit)}\n... output capped`;
+}
+
+function pickRepoEvidenceDetail(result, taskType) {
+  if (!result || typeof result !== "object") {
+    return "";
+  }
+
+  if (taskType === "capabilities") {
+    const entries = extractWorkerCapabilityEntries(result);
+    return entries.length
+      ? entries
+          .slice(0, 12)
+          .map((entry) => `${entry.supported ? "enabled" : "disabled"}: ${entry.label}`)
+          .join("\n")
+      : formatCappedRepoEvidence(result);
+  }
+
+  return formatCappedRepoEvidence(
+    result.result ||
+      result.output ||
+      result.stdout ||
+      result.stderr ||
+      result.detail ||
+      result.summary ||
+      result.message ||
+      result,
+  );
+}
+
+function inferRepoEvidenceStatus(result, error) {
+  if (error) {
+    const errorText = `${error.code || ""} ${error.message || ""}`.toLowerCase();
+    return errorText.includes("blocked") || errorText.includes("unsupported") ? "blocked" : "error";
+  }
+
+  const data = toPlainObject(result);
+
+  if (data.ok === false) {
+    const errorText = `${data.errorCode || ""} ${data.error || ""} ${data.message || ""}`.toLowerCase();
+    return errorText.includes("blocked") || errorText.includes("unsupported") ? "blocked" : "error";
+  }
+
+  const statusText = `${data.status || ""} ${data.state || ""} ${data.summary || ""} ${data.message || ""}`.toLowerCase();
+
+  if (data.clean === true || /\b(clean|no changes?)\b/.test(statusText)) {
+    return "ok";
+  }
+
+  if (
+    data.clean === false ||
+    data.hasChanges === true ||
+    /\b(dirty|modified|untracked|ahead|behind|changes?)\b/.test(statusText)
+  ) {
+    return "warning";
+  }
+
+  return "ok";
+}
+
+function summarizeRepoEvidenceResult(result, taskType) {
+  if (taskType === "health") {
+    return summarizeWorkerHealthResult(result);
+  }
+
+  if (taskType === "capabilities") {
+    const entries = extractWorkerCapabilityEntries(result);
+    const summary = summarizeWorkerCapabilities(entries);
+    return summary.count
+      ? `${summary.supportedCount} supported / ${summary.count} reported`
+      : readServiceString(result?.message, result?.summary, "No capabilities reported.");
+  }
+
+  const jobSummary = summarizeWorkerJobResult(result, taskType);
+  return jobSummary.outcome;
+}
+
+function createRepoEvidenceRecord(task, status = "not_checked", extras = {}) {
+  return {
+    id: task.id,
+    workerId: FEDORA_REPO_WORKER_ID,
+    taskType: task.taskType,
+    label: task.label,
+    target: task.target,
+    targetLabel: task.targetLabel,
+    status,
+    checkedAt: null,
+    summary: status === "not_checked" ? "Not checked yet." : "",
+    detail: "",
+    error: null,
+    ...extras,
+  };
+}
+
+function RepositoryEvidencePanel() {
+  const [registryWorker, setRegistryWorker] = useState(null);
+  const [registryCheckedAt, setRegistryCheckedAt] = useState(null);
+  const [records, setRecords] = useState(() =>
+    Object.fromEntries(FEDORA_REPO_EVIDENCE_TASKS.map((task) => [task.id, createRepoEvidenceRecord(task)])),
+  );
+  const [loadingId, setLoadingId] = useState("");
+  const [error, setError] = useState(null);
+
+  const workerRegistered = Boolean(registryWorker);
+  const workerAuthConfigured = workerRegistered && registryWorker.authConfigured !== false;
+  const canRunEvidence = workerRegistered && workerAuthConfigured && !loadingId;
+  const checkedCount = Object.values(records).filter((record) => record.checkedAt).length;
+  const latestCheckedAt = Object.values(records)
+    .map((record) => new Date(record.checkedAt).getTime())
+    .filter(Number.isFinite)
+    .sort((a, b) => b - a)[0];
+  const latestFreshness = latestCheckedAt
+    ? getRepoEvidenceFreshness(new Date(latestCheckedAt).toISOString())
+    : null;
+
+  async function loadRepoWorkerRegistry({ quiet = false } = {}) {
+    if (!quiet) {
+      setLoadingId("registry");
+      setError(null);
+    }
+
+    try {
+      const response = await fetch("/api/workers");
+      const data = await response.json().catch(() => null);
+
+      if (!response.ok || !data?.ok) {
+        throw new Error(data?.error || data?.errorCode || "Worker registry request failed.");
+      }
+
+      const repoWorker = Array.isArray(data.items)
+        ? data.items.find((worker) => worker.id === FEDORA_REPO_WORKER_ID) || null
+        : null;
+      const checkedAt = new Date().toISOString();
+
+      setRegistryWorker(repoWorker);
+      setRegistryCheckedAt(checkedAt);
+
+      if (!repoWorker) {
+        setError({
+          code: "fedora_repo_worker_missing",
+          message: "fedora-repo is not registered in /api/workers.",
+        });
+      } else if (repoWorker.authConfigured === false) {
+        setError({
+          code: "fedora_repo_worker_auth_missing",
+          message: "fedora-repo is registered but auth is not configured.",
+        });
+      } else if (!quiet) {
+        setError(null);
+      }
+
+      return repoWorker;
+    } catch (requestError) {
+      const nextError = {
+        code: "worker_registry_failed",
+        message: requestError.message || "Worker registry request failed.",
+      };
+      setError(nextError);
+      return null;
+    } finally {
+      if (!quiet) {
+        setLoadingId("");
+      }
+    }
+  }
+
+  async function callRepoEvidenceRoute(task) {
+    if (task.method === "GET") {
+      const response = await fetch(`/api/workers/${FEDORA_REPO_WORKER_ID}${task.route}`);
+      const data = await response.json().catch(() => null);
+
+      if (data == null) {
+        return {
+          response,
+          data: {
+            ok: false,
+            errorCode: "invalid_worker_response",
+            error: "Worker did not return JSON.",
+          },
+          result: {
+            ok: false,
+            errorCode: "invalid_worker_response",
+            error: "Worker did not return JSON.",
+          },
+        };
+      }
+
+      return {
+        response,
+        data,
+        result: data?.result || data,
+      };
+    }
+
+    const response = await fetch(`/api/workers/${FEDORA_REPO_WORKER_ID}/jobs`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        jobId: `garage_repo_evidence_${task.taskType}_${Date.now()}`,
+        taskType: task.taskType,
+        targetHost: "fedora",
+        targetService: FEDORA_REPO_WORKER_ID,
+        input: task.input || {},
+      }),
+    });
+    const data = await response.json().catch(() => null);
+
+    if (data == null) {
+      return {
+        response,
+        data: {
+          ok: false,
+          errorCode: "invalid_worker_response",
+          error: "Worker did not return JSON.",
+        },
+        result: {
+          ok: false,
+          errorCode: "invalid_worker_response",
+          error: "Worker did not return JSON.",
+        },
+      };
+    }
+
+    return {
+      response,
+      data,
+      result: data?.result || data,
+    };
+  }
+
+  async function refreshRepoEvidenceTask(task, { quiet = false } = {}) {
+    if (!quiet) {
+      setLoadingId(task.id);
+      setError(null);
+    }
+
+    setRecords((previous) => ({
+      ...previous,
+      [task.id]: createRepoEvidenceRecord(task, "loading", {
+        checkedAt: previous[task.id]?.checkedAt || null,
+        summary: "Loading read-only evidence...",
+      }),
+    }));
+
+    const checkedAt = new Date().toISOString();
+
+    try {
+      const { response, data, result } = await callRepoEvidenceRoute(task);
+      const responseData = toPlainObject(data);
+      const normalizedError =
+        !response.ok || responseData.ok === false || result?.ok === false
+          ? normalizeWorkerError(
+              result || responseData,
+              result?.errorCode || responseData.errorCode || `http_${response.status}`,
+              result?.error || responseData.error || `${task.label} failed.`,
+            )
+          : null;
+      const status = inferRepoEvidenceStatus(result, normalizedError);
+      const nextRecord = createRepoEvidenceRecord(task, status, {
+        checkedAt,
+        summary: normalizedError?.message || summarizeRepoEvidenceResult(result, task.taskType),
+        detail: pickRepoEvidenceDetail(result, task.taskType),
+        error: normalizedError,
+      });
+
+      setRecords((previous) => ({
+        ...previous,
+        [task.id]: nextRecord,
+      }));
+
+      if (normalizedError && !quiet) {
+        setError(normalizedError);
+      } else if (!quiet) {
+        setError(null);
+      }
+
+      return nextRecord;
+    } catch (requestError) {
+      const normalizedError = {
+        code: "worker_request_failed",
+        message: requestError.message || "Worker request failed.",
+      };
+
+      setRecords((previous) => ({
+        ...previous,
+        [task.id]: createRepoEvidenceRecord(task, "error", {
+          checkedAt,
+          summary: normalizedError.message,
+          error: normalizedError,
+        }),
+      }));
+      setError(normalizedError);
+      return null;
+    } finally {
+      if (!quiet) {
+        setLoadingId("");
+      }
+    }
+  }
+
+  async function refreshRepoEvidenceBatch() {
+    setLoadingId("batch");
+    setError(null);
+
+    const worker = registryWorker || (await loadRepoWorkerRegistry({ quiet: true }));
+
+    if (!worker || worker.authConfigured === false) {
+      setLoadingId("");
+      return;
+    }
+
+    for (const task of FEDORA_REPO_EVIDENCE_TASKS) {
+      await refreshRepoEvidenceTask(task, { quiet: true });
+    }
+
+    setLoadingId("");
+  }
+
+  useEffect(() => {
+    loadRepoWorkerRegistry().catch(() => {});
+  }, []);
+
+  return (
+    <section className="panel-card worker-evidence-card repo-evidence-panel">
+      <div className="panel-heading">
+        <div>
+          <span className="section-title">Repository Evidence</span>
+          <h2>Fedora Repo Worker</h2>
+          <p>
+            Read-only repository evidence from fixed Fedora targets through existing worker routes. This surface is separate from Service Actions and does not expose shell, path input, writes, restarts, rebuilds, or worker creation controls.
+          </p>
+        </div>
+        <div className="worker-evidence-summary">
+          <span className={`status-badge ${workerRegistered ? "status-completed" : "status-unknown"}`}>
+            {loadingId === "registry" ? "loading registry" : workerRegistered ? "registered" : "not registered"}
+          </span>
+          <span className={`status-badge ${workerAuthConfigured ? "status-completed" : "status-failed"}`}>
+            {workerAuthConfigured ? "auth configured" : "auth missing"}
+          </span>
+          <button type="button" className="mini-button" onClick={() => loadRepoWorkerRegistry()} disabled={Boolean(loadingId)}>
+            Refresh Registry
+          </button>
+          <button type="button" className="mini-button" onClick={refreshRepoEvidenceBatch} disabled={!canRunEvidence}>
+            {loadingId === "batch" ? "Refreshing..." : "Refresh Safe Batch"}
+          </button>
+        </div>
+      </div>
+
+      <div className="worker-summary-main repo-evidence-summary-card">
+        <div className="worker-summary-detail-grid">
+          <div className="detail-item">
+            <span className="detail-label">Worker id</span>
+            <span className="detail-value">{FEDORA_REPO_WORKER_ID}</span>
+          </div>
+          <div className="detail-item">
+            <span className="detail-label">Route source</span>
+            <span className="detail-value">Existing /api/workers routes</span>
+          </div>
+          <div className="detail-item">
+            <span className="detail-label">Registry checked</span>
+            <span className="detail-value">{formatCreatedAt(registryCheckedAt)}</span>
+          </div>
+          <div className="detail-item">
+            <span className="detail-label">Evidence checked</span>
+            <span className="detail-value">{checkedCount} / {FEDORA_REPO_EVIDENCE_TASKS.length}</span>
+          </div>
+          <div className="detail-item">
+            <span className="detail-label">Latest freshness</span>
+            <span className="detail-value">
+              {latestFreshness ? (
+                <span className={`signal-freshness-badge signal-freshness-badge-${latestFreshness.bucket}`} title={latestFreshness.detail}>
+                  {latestFreshness.label}
+                </span>
+              ) : (
+                "not checked"
+              )}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {error ? (
+        <div className="banner error-banner worker-evidence-error">
+          <strong>{error.code || "worker_error"}</strong>
+          <span>{error.message}</span>
+        </div>
+      ) : null}
+
+      <div className="repo-evidence-sections">
+        {FEDORA_REPO_EVIDENCE_GROUPS.map((group) => {
+          const groupTasks = group.taskIds.map((taskId) => FEDORA_REPO_EVIDENCE_TASK_BY_ID[taskId]).filter(Boolean);
+
+          return (
+            <section key={group.id} className="repo-evidence-section" aria-label={group.label}>
+              <div className="repo-evidence-section-header">
+                <div>
+                  <span className="detail-label">Fixed safe target</span>
+                  <h3>{group.label}</h3>
+                </div>
+                <span className="repo-evidence-section-target" title={group.target}>
+                  {group.target}
+                </span>
+              </div>
+
+              <div className="repo-evidence-task-list">
+                {groupTasks.map((task) => {
+                  const record = records[task.id] || createRepoEvidenceRecord(task);
+                  const hasChecked = Boolean(record.checkedAt);
+                  const freshness = hasChecked ? getRepoEvidenceFreshness(record.checkedAt) : null;
+                  const isLoading = loadingId === task.id || (loadingId === "batch" && record.status === "loading");
+                  const status = isLoading ? "loading" : hasChecked ? record.status : "not_checked";
+
+                  return (
+                    <article key={task.id} className={`repo-evidence-task-row ${hasChecked ? "has-evidence" : "is-compact"}`}>
+                      <div className="repo-evidence-task-main">
+                        <div>
+                          <div className="repo-evidence-task-heading">
+                            <span className="repo-evidence-task-label">{task.label}</span>
+                            <span className={`status-badge ${getRepoEvidenceStatusClass(status)}`}>{status.replace("_", " ")}</span>
+                          </div>
+                          {hasChecked ? (
+                            <p className="repo-evidence-provenance">
+                              {record.workerId} / {record.taskType} / checked {formatRepoEvidenceCheckedTime(record.checkedAt)}
+                            </p>
+                          ) : null}
+                        </div>
+
+                        <button
+                          type="button"
+                          className="mini-button repo-evidence-refresh"
+                          onClick={() => refreshRepoEvidenceTask(task)}
+                          disabled={!canRunEvidence}
+                        >
+                          {isLoading ? "Refreshing..." : "Refresh"}
+                        </button>
+                      </div>
+
+                      {hasChecked ? (
+                        <div className="repo-evidence-result">
+                          <div className="repo-evidence-result-meta">
+                            <span>{formatCreatedAt(record.checkedAt)}</span>
+                            {freshness ? (
+                              <span className={`signal-freshness-badge signal-freshness-badge-${freshness.bucket}`} title={freshness.detail}>
+                                {freshness.label}
+                              </span>
+                            ) : null}
+                          </div>
+
+                          <p className="worker-evidence-record-copy">{record.summary}</p>
+                          {record.detail ? <pre className="repo-evidence-output">{record.detail}</pre> : null}
+                          {record.error ? (
+                            <p className="worker-evidence-record-error">
+                              {record.error.code}: {record.error.message}
+                            </p>
+                          ) : null}
+                          {record.target ? (
+                            <div className="repo-evidence-target" title={record.target}>
+                              <span className="detail-label">Repo/file target</span>
+                              <span>{record.target}</span>
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </article>
+                  );
+                })}
+              </div>
+            </section>
+          );
+        })}
+      </div>
+    </section>
+  );
 }
 
 function getWorkerStateLine(worker) {
@@ -6333,6 +7008,7 @@ export default function App() {
                   restarts, rebuilds, repairs, migrations, deletes, or writes.
                 </p>
               </div>
+              <RepositoryEvidencePanel />
               <WorkerEvidencePanel />
             </section>
           ) : activeWorkspaceTab === "assistant" ? (

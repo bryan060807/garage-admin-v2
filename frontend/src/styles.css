@@ -3280,6 +3280,143 @@ button {
   margin: 0;
 }
 
+.repo-evidence-panel {
+  border-color: rgba(125, 211, 252, 0.16);
+}
+
+.repo-evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+  gap: 0.75rem;
+}
+
+.repo-evidence-card h3,
+.repo-evidence-section h3 {
+  margin: 0.15rem 0 0;
+}
+
+.repo-evidence-summary-card {
+  padding: 0.85rem;
+}
+
+.repo-evidence-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.repo-evidence-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.85rem;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 0.9rem;
+  background: rgba(15, 23, 42, 0.28);
+}
+
+.repo-evidence-section-header,
+.repo-evidence-task-main,
+.repo-evidence-task-heading,
+.repo-evidence-result-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.repo-evidence-section-header,
+.repo-evidence-task-main {
+  justify-content: space-between;
+}
+
+.repo-evidence-section-target {
+  max-width: min(56ch, 52%);
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.repo-evidence-task-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.repo-evidence-task-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  padding: 0.72rem;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 0.75rem;
+  background: rgba(2, 6, 23, 0.22);
+}
+
+.repo-evidence-task-row.is-compact {
+  padding-block: 0.58rem;
+}
+
+.repo-evidence-task-label {
+  color: #e2e8f0;
+  font-weight: 700;
+}
+
+.repo-evidence-provenance,
+.repo-evidence-result-meta {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 0.8rem;
+}
+
+.repo-evidence-result {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.repo-evidence-refresh {
+  flex: 0 0 auto;
+}
+
+.repo-evidence-target {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.55rem 0.65rem;
+  border-radius: 0.65rem;
+  background: rgba(15, 23, 42, 0.32);
+  color: var(--text-muted);
+  font-size: 0.86rem;
+  overflow-wrap: anywhere;
+}
+
+.repo-evidence-output {
+  max-height: 180px;
+  overflow: auto;
+  margin: 0;
+  padding: 0.65rem;
+  border-radius: 0.65rem;
+  background: rgba(2, 6, 23, 0.42);
+  color: rgba(226, 232, 240, 0.9);
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 720px) {
+  .repo-evidence-section-header,
+  .repo-evidence-task-main {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .repo-evidence-section-target {
+    max-width: 100%;
+    text-align: left;
+  }
+}
+
 /* Workspace tabs added for worker-agent UI navigation */
 .workspace-tabs {
   display: flex;
