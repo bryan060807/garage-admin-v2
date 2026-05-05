@@ -3529,6 +3529,28 @@ button {
   border-color: rgba(125, 183, 224, 0.2);
 }
 
+.chatkit-panel-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.chatkit-panel-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  align-items: center;
+}
+
+.chatkit-embedded-surface {
+  min-height: 640px;
+  width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: rgba(8, 16, 24, 0.44);
+}
+
 .chatkit-proof-header {
   display: flex;
   align-items: flex-start;
@@ -3552,6 +3574,17 @@ button {
 
 .chatkit-proof-message {
   color: var(--text-soft);
+}
+
+.chatkit-proof-divider {
+  height: 1px;
+  background: var(--border-quiet);
+}
+
+.chatkit-proof-diagnostics {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
 }
 
 .workspace-columns-tab-overview {

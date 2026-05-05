@@ -1,4 +1,5 @@
 ﻿import { Component, useEffect, useRef, useState } from "react";
+import ChatKitPanel from "./ChatKitPanel";
 import {
   buildActionApprovalContext,
   buildActionApprovalContextFromReviewSnapshot,
@@ -4751,6 +4752,7 @@ export default function App() {
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState(null);
   const [messages, setMessages] = useState([]);
+  const [chatkitStatus, setChatkitStatus] = useState(null);
   const [chatkitLoading, setChatkitLoading] = useState(false);
   const [chatkitResult, setChatkitResult] = useState(null);
   const [chatkitError, setChatkitError] = useState(null);
@@ -4838,6 +4840,14 @@ export default function App() {
 
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [assistantMode]);
+
+  useEffect(() => {
+    if (activeWorkspaceTab !== "assistant" || chatkitLoading || chatkitStatus) {
+      return;
+    }
+
+    runChatKitProbe("status").catch(() => {});
+  }, [activeWorkspaceTab, chatkitLoading, chatkitStatus]);
 
   function setRightPanelSplitFromClientY(clientY) {
     const grid = opsGridRef.current;
@@ -6393,6 +6403,7 @@ export default function App() {
         throw new Error(data?.error?.message || data?.error || `${label} check failed`);
       }
 
+      setChatkitStatus(data);
       setChatkitResult({
         ...data,
         checkedAt: new Date().toISOString(),
@@ -7128,14 +7139,28 @@ export default function App() {
                 <div className="chatkit-proof-header">
                   <div>
                     <span className="detail-label">Experimental ChatKit</span>
-                    <h3 id="chatkit-proof-heading">Proof of Life</h3>
+                    <h3 id="chatkit-proof-heading">Hosted Session</h3>
                   </div>
-                  <span className="status-badge status-info">Prep only</span>
+                  <span className="status-badge status-info">
+                    {chatkitStatus?.status === "configured" ? "Assistant only" : "Prep only"}
+                  </span>
                 </div>
                 <p className="inline-note">
-                  Experimental ChatKit prep is separate from Service Actions. It can check the local prep route and configuration only:
-                  it cannot restart, approve, write, run shell, call workers, or bypass Service Actions.
+                  Experimental ChatKit stays separate from Service Actions. It cannot restart, approve, write, run shell,
+                  call workers, or bypass Service Actions.
                 </p>
+                <ChatKitPanel
+                  status={chatkitStatus}
+                  selectedServiceLabel={selectedServiceRecord?.displayName || selectedService || ""}
+                />
+                <div className="chatkit-proof-divider" />
+                <div className="chatkit-proof-diagnostics">
+                  <span className="detail-label">Prep diagnostics</span>
+                  <p className="inline-note">
+                    Keep the existing local proof-of-life and status checks as fallback diagnostics while the hosted session
+                    integration settles.
+                  </p>
+                </div>
                 <div className="panel-actions">
                   <button
                     type="button"
