@@ -3404,6 +3404,65 @@ button {
   white-space: pre-wrap;
 }
 
+.windows-bridge-panel {
+  border-color: rgba(96, 165, 250, 0.18);
+}
+
+.windows-bridge-source-grid {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.windows-bridge-source-card,
+.windows-bridge-service-card,
+.windows-bridge-repo-card {
+  border-color: rgba(125, 183, 224, 0.18);
+}
+
+.windows-bridge-service-header,
+.windows-bridge-service-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.75rem;
+}
+
+.windows-bridge-service-controls {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.windows-bridge-capabilities {
+  margin-top: 0.15rem;
+}
+
+.windows-bridge-capability-disabled {
+  opacity: 0.8;
+}
+
+.windows-bridge-repo-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.windows-bridge-repo-row {
+  gap: 0.75rem;
+}
+
+.windows-bridge-repo-meta {
+  width: 100%;
+}
+
+.windows-bridge-warning-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.windows-bridge-warning-chip {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 720px) {
   .repo-evidence-section-header,
   .repo-evidence-task-main {
@@ -3414,6 +3473,12 @@ button {
   .repo-evidence-section-target {
     max-width: 100%;
     text-align: left;
+  }
+
+  .windows-bridge-service-header,
+  .windows-bridge-service-controls {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }
 
@@ -3540,6 +3605,40 @@ button {
   flex-wrap: wrap;
   gap: 0.65rem;
   align-items: center;
+}
+
+.chatkit-readiness-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.85rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: rgba(8, 16, 24, 0.38);
+}
+
+.chatkit-fact-ready {
+  border-color: rgba(92, 184, 92, 0.22);
+}
+
+.chatkit-fact-missing {
+  border-color: rgba(246, 180, 64, 0.2);
+}
+
+.chatkit-next-step {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.chatkit-next-step p {
+  margin: 0;
+}
+
+.chatkit-disabled-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
 }
 
 .chatkit-embedded-surface {

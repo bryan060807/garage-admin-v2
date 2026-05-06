@@ -30,8 +30,10 @@ import { extractServiceDiagnosis, extractServiceLogEvents } from "../src/diagnos
 const require = createRequire(import.meta.url);
 const actionsRouter = require("../../backend/src/routes/actions.js");
 const chatRouter = require("../../backend/src/routes/chat.js");
+const chatkitRouter = require("../../backend/src/routes/chatkit.js");
 const { mergeActionReviewIntoInput, sanitizeActionReviewSnapshot } = actionsRouter.__testables;
 const { buildGroundedResponse, classifyAssistantIntent } = chatRouter.__testables;
+const { buildChatKitStatus, buildTemporaryChatKitUserId } = chatkitRouter.__testables;
 
 const FRESHNESS_NOW = Date.parse("2026-05-01T12:00:00Z");
 
@@ -341,6 +343,36 @@ function buildApprovalInventorySnapshot(overrides = {}) {
     },
     ...overrides,
   };
+}
+
+function withTemporaryEnv(overrides, callback) {
+  const previous = {};
+  const keys = Object.keys(overrides);
+
+  keys.forEach((key) => {
+    previous[key] = process.env[key];
+    const value = overrides[key];
+
+    if (value == null) {
+      delete process.env[key];
+      return;
+    }
+
+    process.env[key] = String(value);
+  });
+
+  try {
+    return callback();
+  } finally {
+    keys.forEach((key) => {
+      if (previous[key] == null) {
+        delete process.env[key];
+        return;
+      }
+
+      process.env[key] = previous[key];
+    });
+  }
 }
 
 const cases = [
@@ -2056,6 +2088,69 @@ const groundedLookupStub = {
 };
 
 const groundedServiceContext = assistantContextCases[0].context;
+const disabledChatKitStatus = withTemporaryEnv(
+  {
+    CHATKIT_EXPERIMENTAL_ENABLED: "false",
+    OPENAI_API_KEY: null,
+    OPENAI_CHATKIT_WORKFLOW_ID: null,
+  },
+  () => buildChatKitStatus(),
+);
+assert.equal(disabledChatKitStatus.mode, "disabled");
+assert.equal(disabledChatKitStatus.availability, "disabled");
+assert.ok(disabledChatKitStatus.missingConfig.includes("CHATKIT_EXPERIMENTAL_ENABLED"));
+assert.equal(Object.prototype.hasOwnProperty.call(disabledChatKitStatus, "client_secret"), false);
+results.push({
+  name: "chatkit disabled status stays safe and does not expose secrets",
+  chatkitMode: disabledChatKitStatus.mode,
+  chatkitMissingCount: disabledChatKitStatus.missingConfig.length,
+});
+
+const prepChatKitStatus = withTemporaryEnv(
+  {
+    CHATKIT_EXPERIMENTAL_ENABLED: "true",
+    OPENAI_API_KEY: "test-key",
+    OPENAI_CHATKIT_WORKFLOW_ID: null,
+  },
+  () => buildChatKitStatus(),
+);
+assert.equal(prepChatKitStatus.mode, "prep");
+assert.equal(prepChatKitStatus.availability, "unavailable");
+assert.deepEqual(prepChatKitStatus.missingConfig, ["OPENAI_CHATKIT_WORKFLOW_ID"]);
+results.push({
+  name: "chatkit prep status reports missing config names only",
+  chatkitMode: prepChatKitStatus.mode,
+  missingConfig: prepChatKitStatus.missingConfig.join(","),
+});
+
+const configuredChatKitStatus = withTemporaryEnv(
+  {
+    CHATKIT_EXPERIMENTAL_ENABLED: "true",
+    OPENAI_API_KEY: "test-key",
+    OPENAI_CHATKIT_WORKFLOW_ID: "wf_test_123",
+  },
+  () => buildChatKitStatus(),
+);
+assert.equal(configuredChatKitStatus.mode, "configured");
+assert.equal(configuredChatKitStatus.session.enabled, true);
+assert.equal(configuredChatKitStatus.missingConfig.length, 0);
+results.push({
+  name: "chatkit configured status reports hosted session readiness",
+  chatkitMode: configuredChatKitStatus.mode,
+  availability: configuredChatKitStatus.availability,
+});
+
+const sanitizedChatKitUser = buildTemporaryChatKitUserId({
+  get(name) {
+    return name === "x-chatkit-user" ? " demo operator !! / garage " : "";
+  },
+});
+assert.equal(sanitizedChatKitUser, "demo-operator-garage");
+results.push({
+  name: "chatkit temporary operator id stays sanitized",
+  operatorId: sanitizedChatKitUser,
+});
+
 const groundedWhatIsWrong = await buildGroundedResponse("what's wrong?", groundedServiceContext, null, {
   lookupApi: groundedLookupStub,
 });

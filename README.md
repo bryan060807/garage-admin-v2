@@ -313,6 +313,36 @@ If verification fails while the restart command completed, the action remains `c
 - Chat does not execute actions.
 - Suggested actions must still be reviewed and approved in the Actions panel.
 
+## ChatKit Readiness
+
+- ChatKit is an assistant surface only. It must not execute actions, approve actions, restart services, write files, run shell commands, call workers for state changes, or bypass Service Actions.
+- The backend readiness routes are:
+  - `GET /api/chatkit/status`
+  - `POST /api/chatkit/proof-of-life`
+  - `POST /api/chatkit/session` when backend-only ChatKit configuration is complete
+- `GET /api/chatkit/status` returns only operator-safe readiness metadata such as `mode`, `availability`, `missingConfig`, `checkedAt`, and a clear reason. It never returns env values, API keys, workflow internals, or session payloads.
+- Required backend env names for hosted sessions:
+  - `CHATKIT_EXPERIMENTAL_ENABLED=true`
+  - `OPENAI_API_KEY`
+  - `OPENAI_CHATKIT_WORKFLOW_ID`
+  - `CHATKIT_SESSION_TIMEOUT_MS` optional timeout override for the server-side session request
+- The frontend receives only a short-lived `client_secret` from the backend session route. Provider credentials stay backend-only.
+- Local validation commands for this slice:
+  - `node --check backend/src/server.js`
+  - `node --check backend/src/routes/chatkit.js`
+  - `node frontend/scripts/diagnostics-smoke.mjs`
+  - `npm run build`
+- If you update ChatKit env vars for the Windows PM2 runtime, refresh the process environment before re-checking readiness:
+  - `pm2 restart garage-admin-v2 --update-env`
+- Deliberately not enabled in this pass:
+  - ChatKit tools/actions
+  - Service Action execution or approval
+  - worker job execution
+  - file uploads/writes
+  - shell execution
+  - restart paths
+  - browser-side secrets or direct bridge calls
+
 ## Notes
 
 - No secrets are hardcoded.

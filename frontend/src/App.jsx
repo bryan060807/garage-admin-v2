@@ -326,6 +326,38 @@ function formatAssistantHostOwnership(host) {
   return "";
 }
 
+function getChatKitModeBadgeClass(mode) {
+  if (mode === "configured") {
+    return "status-completed";
+  }
+
+  if (mode === "error") {
+    return "status-failed";
+  }
+
+  if (mode === "prep") {
+    return "status-warning";
+  }
+
+  return "status-unknown";
+}
+
+function formatChatKitModeLabel(mode) {
+  if (mode === "configured") {
+    return "Configured";
+  }
+
+  if (mode === "disabled") {
+    return "Disabled";
+  }
+
+  if (mode === "error") {
+    return "Error";
+  }
+
+  return "Prep";
+}
+
 function buildAssistantAttentionState({
   hasSelectedService = false,
   unreadCount = 0,
@@ -2644,6 +2676,107 @@ const FEDORA_REPO_EVIDENCE_GROUPS = [
 const FEDORA_REPO_EVIDENCE_TASK_BY_ID = Object.fromEntries(
   FEDORA_REPO_EVIDENCE_TASKS.map((task) => [task.id, task]),
 );
+const WINDOWS_BRIDGE_SERVICE_OPTIONS = [
+  "garage-admin-v2",
+  "windows-aibry-admin",
+  "windows-node-agent",
+  "windows-admin-proxy",
+  "windows-garage-api",
+  "taskmaster-api",
+  "taskmaster-app",
+  "trackmaster-api",
+  "trackmaster-ui",
+  "aibry-masterclass-landing",
+  "chordmaster-api",
+  "chordmaster-ui",
+];
+
+function formatLatencyMs(value) {
+  const latency = Number(value);
+  return Number.isFinite(latency) && latency >= 0 ? `${Math.round(latency)} ms` : "Unknown";
+}
+
+function formatPercent(value) {
+  const percent = Number(value);
+  return Number.isFinite(percent) ? `${percent.toFixed(percent >= 10 ? 0 : 1)}%` : "Unknown";
+}
+
+function getBridgeStatusBadge(ok, hasChecked = false) {
+  if (!hasChecked) {
+    return "status-unknown";
+  }
+
+  return ok ? "status-completed" : "status-failed";
+}
+
+function summarizeBridgeSourceStatus(source, fallbackLabel) {
+  if (!source) {
+    return "Not checked yet.";
+  }
+
+  if (source.ok === false) {
+    return readServiceString(source?.error?.message, source?.summary, `${fallbackLabel} is unavailable.`);
+  }
+
+  return readServiceString(source.summary, source.status, `${fallbackLabel} is available.`);
+}
+
+function summarizeBridgeOverallStatus(adminSource, pulseSource) {
+  const adminChecked = Boolean(adminSource?.checkedAt);
+  const pulseChecked = Boolean(pulseSource?.checkedAt);
+
+  if (!adminChecked && !pulseChecked) {
+    return "not checked";
+  }
+
+  if (adminSource?.ok && pulseSource?.ok) {
+    return "bridge available";
+  }
+
+  if (adminSource?.ok || pulseSource?.ok) {
+    return "bridge partial";
+  }
+
+  return "bridge unavailable";
+}
+
+function normalizeBridgeRoutePayload(data, fallbackCode, fallbackMessage) {
+  if (data == null) {
+    return {
+      ok: false,
+      code: fallbackCode,
+      message: fallbackMessage,
+    };
+  }
+
+  return data;
+}
+
+function formatBridgeRepoLastCommit(repo) {
+  const commit = toPlainObject(repo?.lastCommit);
+  return readServiceString(commit.summary, commit.hash, "Unknown");
+}
+
+function formatBridgeRepoRemote(repo) {
+  const remote = toPlainObject(repo?.remote);
+  return readServiceString(remote.display, remote.url, remote.name, "Not reported");
+}
+
+function getBridgeRepoTone(repo) {
+  if (normalizeStringArray(repo?.warnings).length) {
+    return "status-warning";
+  }
+
+  if (repo?.clean === true) {
+    return "status-completed";
+  }
+
+  if (repo?.dirty === true) {
+    return "status-warning";
+  }
+
+  return "status-unknown";
+}
 
 function getWorkerDisplayName(worker) {
   return readServiceString(worker?.name, worker?.id, "Worker");
@@ -3457,6 +3590,549 @@ function RepositoryEvidencePanel() {
           );
         })}
       </div>
+    </section>
+  );
+}
+
+function WindowsBridgeEvidencePanel() {
+  const [selectedBridgeService, setSelectedBridgeService] = useState("garage-admin-v2");
+  const [freshnessNow, setFreshnessNow] = useState(() => Date.now());
+  const [loadingAction, setLoadingAction] = useState("");
+  const [bridgeHealth, setBridgeHealth] = useState(null);
+  const [bridgeServiceStatus, setBridgeServiceStatus] = useState(null);
+  const [bridgeRepoStatus, setBridgeRepoStatus] = useState(null);
+  const [panelError, setPanelError] = useState(null);
+  const serviceSelectionHydratedRef = useRef(false);
+
+  const adminHealth = toPlainObject(bridgeHealth?.sources?.windowsAdmin);
+  const garagePulse = toPlainObject(bridgeHealth?.sources?.windowsGaragePulse);
+  const garageHealth = toPlainObject(bridgeHealth?.sources?.windowsGarageHealth);
+  const repoItems = normalizeObjectCollection(bridgeRepoStatus?.items);
+  const repoWarningCount =
+    readServiceNumber(bridgeRepoStatus?.warningCount) ??
+    repoItems.reduce((count, item) => count + normalizeStringArray(item.warnings).length, 0);
+  const latestCheckedAt = [
+    bridgeHealth?.checkedAt,
+    adminHealth?.checkedAt,
+    garagePulse?.checkedAt,
+    bridgeServiceStatus?.checkedAt,
+    bridgeRepoStatus?.checkedAt,
+  ]
+    .map((value) => new Date(value).getTime())
+    .filter(Number.isFinite)
+    .sort((a, b) => b - a)[0];
+  const latestFreshness = latestCheckedAt
+    ? getRepoEvidenceFreshness(new Date(latestCheckedAt).toISOString(), freshnessNow)
+    : null;
+  const bridgeAvailability = summarizeBridgeOverallStatus(adminHealth, garagePulse);
+
+  async function fetchBridgeRoute(pathname, fallbackCode, fallbackMessage) {
+    const response = await fetch(pathname);
+    const data = normalizeBridgeRoutePayload(
+      await response.json().catch(() => null),
+      fallbackCode,
+      fallbackMessage,
+    );
+
+    return {
+      response,
+      data,
+      error:
+        !response.ok || data?.ok === false
+          ? normalizeWorkerError(data, fallbackCode, fallbackMessage)
+          : null,
+    };
+  }
+
+  async function loadBridgeHealth({ quiet = false } = {}) {
+    const { response, data, error } = await fetchBridgeRoute(
+      "/api/windows-bridge/health",
+      "windows_bridge_health_failed",
+      "Windows bridge health request failed.",
+    );
+
+    setBridgeHealth(data);
+    setFreshnessNow(Date.now());
+
+    if (!quiet) {
+      setPanelError(error);
+    }
+
+    return {
+      ok: response.ok && !error,
+      error,
+      data,
+    };
+  }
+
+  async function loadBridgeServiceStatus(serviceName, { quiet = false } = {}) {
+    const { response, data, error } = await fetchBridgeRoute(
+      `/api/windows-bridge/services/${encodeURIComponent(serviceName)}/status`,
+      "windows_bridge_service_failed",
+      "Windows service status request failed.",
+    );
+
+    setBridgeServiceStatus(data);
+    setFreshnessNow(Date.now());
+
+    if (!quiet) {
+      setPanelError(error);
+    }
+
+    return {
+      ok: response.ok && !error,
+      error,
+      data,
+    };
+  }
+
+  async function loadBridgeRepoStatus({ quiet = false } = {}) {
+    const { response, data, error } = await fetchBridgeRoute(
+      "/api/windows-bridge/repos/status",
+      "windows_bridge_repos_failed",
+      "Windows repo status request failed.",
+    );
+
+    setBridgeRepoStatus(data);
+    setFreshnessNow(Date.now());
+
+    if (!quiet) {
+      setPanelError(error);
+    }
+
+    return {
+      ok: response.ok && !error,
+      error,
+      data,
+    };
+  }
+
+  async function refreshBridgeSection(target) {
+    setLoadingAction(target);
+    setPanelError(null);
+
+    try {
+      if (target === "health") {
+        await loadBridgeHealth();
+        return;
+      }
+
+      if (target === "service") {
+        await loadBridgeServiceStatus(selectedBridgeService);
+        return;
+      }
+
+      if (target === "repos") {
+        await loadBridgeRepoStatus();
+        return;
+      }
+
+      const results = await Promise.allSettled([
+        loadBridgeHealth({ quiet: true }),
+        loadBridgeServiceStatus(selectedBridgeService, { quiet: true }),
+        loadBridgeRepoStatus({ quiet: true }),
+      ]);
+      const errors = results
+        .map((result) => (result.status === "fulfilled" ? result.value?.error : { code: "bridge_refresh_failed", message: "Bridge refresh failed." }))
+        .filter(Boolean);
+
+      if (errors.length) {
+        setPanelError({
+          code: errors.length === results.length ? "windows_bridge_unavailable" : "windows_bridge_partial",
+          message:
+            errors.length === results.length
+              ? "Windows bridge evidence is currently unavailable."
+              : "Windows bridge returned partial evidence. Successful cards remain visible below.",
+        });
+      }
+    } finally {
+      setLoadingAction("");
+    }
+  }
+
+  useEffect(() => {
+    refreshBridgeSection("all").catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setFreshnessNow(Date.now());
+    }, 30000);
+
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!serviceSelectionHydratedRef.current) {
+      serviceSelectionHydratedRef.current = true;
+      return;
+    }
+
+    refreshBridgeSection("service").catch(() => {});
+  }, [selectedBridgeService]);
+
+  const serviceCapabilities = normalizeObjectCollection(bridgeServiceStatus?.capabilities);
+  const approvalGatedCapabilities = normalizeObjectCollection(bridgeServiceStatus?.approvalGatedCapabilities);
+
+  return (
+    <section className="panel-card worker-evidence-card windows-bridge-panel">
+      <div className="panel-heading">
+        <div>
+          <span className="section-title">Windows Bridge</span>
+          <h2>Windows Runtime Evidence</h2>
+          <p>
+            Read-only Windows Admin Bridge and Windows Garage Helper evidence routed through Garage Admin V2 backend
+            routes only. No direct browser bridge calls, no restart controls, no writes, no repairs, and no secret
+            exposure.
+          </p>
+        </div>
+        <div className="worker-evidence-summary">
+          <span className={`status-badge ${bridgeAvailability === "bridge available" ? "status-completed" : bridgeAvailability === "bridge partial" ? "status-warning" : bridgeAvailability === "bridge unavailable" ? "status-failed" : "status-unknown"}`}>
+            {bridgeAvailability}
+          </span>
+          <span className="status-badge status-info">backend-only auth</span>
+          <button type="button" className="mini-button" onClick={() => refreshBridgeSection("all")} disabled={Boolean(loadingAction)}>
+            {loadingAction === "all" ? "Refreshing..." : "Refresh All"}
+          </button>
+        </div>
+      </div>
+
+      <div className="worker-summary-main repo-evidence-summary-card windows-bridge-summary-card">
+        <div className="worker-summary-detail-grid">
+          <div className="detail-item">
+            <span className="detail-label">Route family</span>
+            <span className="detail-value">/api/windows-bridge/*</span>
+          </div>
+          <div className="detail-item">
+            <span className="detail-label">Selected service</span>
+            <span className="detail-value">{selectedBridgeService}</span>
+          </div>
+          <div className="detail-item">
+            <span className="detail-label">Latest freshness</span>
+            <span className="detail-value">
+              {latestFreshness ? (
+                <span className={`signal-freshness-badge signal-freshness-badge-${latestFreshness.bucket}`} title={latestFreshness.detail}>
+                  {latestFreshness.label}
+                </span>
+              ) : (
+                "not checked"
+              )}
+            </span>
+          </div>
+          <div className="detail-item">
+            <span className="detail-label">Windows Admin</span>
+            <span className="detail-value">{summarizeBridgeSourceStatus(adminHealth, "Windows Admin")}</span>
+          </div>
+          <div className="detail-item">
+            <span className="detail-label">Windows Garage pulse</span>
+            <span className="detail-value">{summarizeBridgeSourceStatus(garagePulse, "Windows Garage pulse")}</span>
+          </div>
+          <div className="detail-item">
+            <span className="detail-label">Repo warnings</span>
+            <span className="detail-value">{bridgeRepoStatus ? repoWarningCount : "not checked"}</span>
+          </div>
+        </div>
+      </div>
+
+      {panelError ? (
+        <div className="banner error-banner worker-evidence-error">
+          <strong>{panelError.code || "windows_bridge_error"}</strong>
+          <span>{panelError.message}</span>
+        </div>
+      ) : null}
+
+      <div className="repo-evidence-grid windows-bridge-source-grid">
+        {[
+          {
+            id: "admin-health",
+            label: "Windows Admin health",
+            source: adminHealth,
+            action: "health",
+          },
+          {
+            id: "garage-pulse",
+            label: "Windows Garage pulse",
+            source: garagePulse,
+            action: "health",
+          },
+          {
+            id: "garage-health",
+            label: "Windows Garage admin health",
+            source: garageHealth,
+            action: "health",
+          },
+        ].map((entry) => {
+          const hasChecked = Boolean(entry.source?.checkedAt);
+          const freshness = hasChecked ? getRepoEvidenceFreshness(entry.source.checkedAt, freshnessNow) : null;
+
+          return (
+            <article key={entry.id} className="repo-evidence-section windows-bridge-source-card">
+              <div className="repo-evidence-task-main">
+                <div>
+                  <span className="detail-label">{entry.source?.source || "Windows bridge"}</span>
+                  <h3>{entry.label}</h3>
+                </div>
+                <button
+                  type="button"
+                  className="mini-button"
+                  onClick={() => refreshBridgeSection(entry.action)}
+                  disabled={Boolean(loadingAction)}
+                >
+                  {loadingAction === entry.action ? "Refreshing..." : "Refresh"}
+                </button>
+              </div>
+
+              <div className="worker-summary-detail-grid">
+                <div className="detail-item">
+                  <span className="detail-label">Status</span>
+                  <span className="detail-value">
+                    <span className={`status-badge ${getBridgeStatusBadge(entry.source?.ok, hasChecked)}`}>
+                      {hasChecked ? (entry.source?.ok ? "ok" : "attention") : "not checked"}
+                    </span>
+                  </span>
+                </div>
+                <div className="detail-item">
+                  <span className="detail-label">Checked at</span>
+                  <span className="detail-value">{formatCreatedAt(entry.source?.checkedAt)}</span>
+                </div>
+                <div className="detail-item">
+                  <span className="detail-label">Latency</span>
+                  <span className="detail-value">{formatLatencyMs(entry.source?.latencyMs)}</span>
+                </div>
+                <div className="detail-item">
+                  <span className="detail-label">HTTP</span>
+                  <span className="detail-value">{readServiceString(entry.source?.httpStatus, "Unknown")}</span>
+                </div>
+              </div>
+
+              <p className="worker-evidence-record-copy">{summarizeBridgeSourceStatus(entry.source, entry.label)}</p>
+              {freshness ? (
+                <div className="repo-evidence-result-meta">
+                  <span>{formatCreatedAt(entry.source?.checkedAt)}</span>
+                  <span className={`signal-freshness-badge signal-freshness-badge-${freshness.bucket}`} title={freshness.detail}>
+                    {freshness.label}
+                  </span>
+                </div>
+              ) : null}
+              {entry.source?.error ? (
+                <p className="worker-evidence-record-error">
+                  {entry.source.error.code}: {entry.source.error.message}
+                </p>
+              ) : null}
+            </article>
+          );
+        })}
+      </div>
+
+      <section className="repo-evidence-section windows-bridge-service-card">
+        <div className="repo-evidence-task-main windows-bridge-service-header">
+          <div>
+            <span className="detail-label">Service status</span>
+            <h3>{selectedBridgeService}</h3>
+          </div>
+          <div className="windows-bridge-service-controls">
+            <label className="worker-evidence-select-label">
+              <span className="detail-label">Windows service</span>
+              <select
+                className="worker-evidence-select"
+                value={selectedBridgeService}
+                onChange={(event) => setSelectedBridgeService(event.target.value)}
+              >
+                {WINDOWS_BRIDGE_SERVICE_OPTIONS.map((serviceName) => (
+                  <option key={serviceName} value={serviceName}>
+                    {serviceName}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button type="button" className="mini-button" onClick={() => refreshBridgeSection("service")} disabled={Boolean(loadingAction)}>
+              {loadingAction === "service" ? "Refreshing..." : "Refresh"}
+            </button>
+          </div>
+        </div>
+
+        <div className="worker-summary-detail-grid">
+          <div className="detail-item">
+            <span className="detail-label">Source</span>
+            <span className="detail-value">{readServiceString(bridgeServiceStatus?.source, "windows-admin")}</span>
+          </div>
+          <div className="detail-item">
+            <span className="detail-label">Status</span>
+            <span className="detail-value">{readServiceString(bridgeServiceStatus?.status, "Unknown")}</span>
+          </div>
+          <div className="detail-item">
+            <span className="detail-label">PM2 status</span>
+            <span className="detail-value">{readServiceString(bridgeServiceStatus?.pm2Status, "Not reported")}</span>
+          </div>
+          <div className="detail-item">
+            <span className="detail-label">Health status</span>
+            <span className="detail-value">{readServiceString(bridgeServiceStatus?.healthStatus, "Not reported")}</span>
+          </div>
+          <div className="detail-item">
+            <span className="detail-label">PID</span>
+            <span className="detail-value">{readServiceString(bridgeServiceStatus?.pid, "Not reported")}</span>
+          </div>
+          <div className="detail-item">
+            <span className="detail-label">Memory</span>
+            <span className="detail-value">
+              {bridgeServiceStatus?.memory != null ? formatBytes(bridgeServiceStatus.memory) : "Not reported"}
+            </span>
+          </div>
+          <div className="detail-item">
+            <span className="detail-label">CPU</span>
+            <span className="detail-value">{bridgeServiceStatus?.cpu != null ? formatPercent(bridgeServiceStatus.cpu) : "Not reported"}</span>
+          </div>
+          <div className="detail-item">
+            <span className="detail-label">Checked at</span>
+            <span className="detail-value">{formatCreatedAt(bridgeServiceStatus?.checkedAt)}</span>
+          </div>
+          <div className="detail-item">
+            <span className="detail-label">Latency</span>
+            <span className="detail-value">{formatLatencyMs(bridgeServiceStatus?.latencyMs)}</span>
+          </div>
+        </div>
+
+        <p className="worker-evidence-record-copy">
+          {readServiceString(
+            bridgeServiceStatus?.summary,
+            bridgeServiceStatus?.error?.message,
+            "Refresh the selected Windows service to load read-only bridge status.",
+          )}
+        </p>
+
+        <div className="worker-capability-chip-row windows-bridge-capabilities">
+          {serviceCapabilities.length ? (
+            serviceCapabilities.map((capability) => (
+              <span
+                key={`${capability.label}-${capability.detail || "none"}`}
+                className={`status-badge ${capability.enabled ? "status-supported" : "status-unknown"} worker-capability-chip`}
+                title={capability.detail || capability.label}
+              >
+                {capability.label}
+              </span>
+            ))
+          ) : (
+            <span className="empty-state">No upstream capabilities were reported for this status response.</span>
+          )}
+          {approvalGatedCapabilities.map((capability) => (
+            <span
+              key={`${capability.label}-${capability.detail || "approval-gated"}`}
+              className="status-badge status-unknown worker-capability-chip windows-bridge-capability-disabled"
+              title={capability.detail || "Approval-gated"}
+            >
+              {capability.label} disabled
+            </span>
+          ))}
+        </div>
+
+        {bridgeServiceStatus?.error ? (
+          <p className="worker-evidence-record-error">
+            {bridgeServiceStatus.error.code}: {bridgeServiceStatus.error.message}
+          </p>
+        ) : null}
+      </section>
+
+      <section className="repo-evidence-section windows-bridge-repo-card">
+        <div className="repo-evidence-task-main">
+          <div>
+            <span className="detail-label">Repository evidence</span>
+            <h3>Windows Garage repos with status</h3>
+          </div>
+          <button type="button" className="mini-button" onClick={() => refreshBridgeSection("repos")} disabled={Boolean(loadingAction)}>
+            {loadingAction === "repos" ? "Refreshing..." : "Refresh"}
+          </button>
+        </div>
+
+        <div className="worker-summary-detail-grid">
+          <div className="detail-item">
+            <span className="detail-label">Source</span>
+            <span className="detail-value">{readServiceString(bridgeRepoStatus?.source, "windows-garage")}</span>
+          </div>
+          <div className="detail-item">
+            <span className="detail-label">Repo count</span>
+            <span className="detail-value">{bridgeRepoStatus ? readServiceString(bridgeRepoStatus?.count, repoItems.length) : "not checked"}</span>
+          </div>
+          <div className="detail-item">
+            <span className="detail-label">Warnings</span>
+            <span className="detail-value">{bridgeRepoStatus ? repoWarningCount : "not checked"}</span>
+          </div>
+          <div className="detail-item">
+            <span className="detail-label">Checked at</span>
+            <span className="detail-value">{formatCreatedAt(bridgeRepoStatus?.checkedAt)}</span>
+          </div>
+          <div className="detail-item">
+            <span className="detail-label">Latency</span>
+            <span className="detail-value">{formatLatencyMs(bridgeRepoStatus?.latencyMs)}</span>
+          </div>
+        </div>
+
+        <p className="worker-evidence-record-copy">
+          {readServiceString(
+            bridgeRepoStatus?.summary,
+            bridgeRepoStatus?.error?.message,
+            "Refresh to load read-only Windows repo evidence.",
+          )}
+        </p>
+
+        {repoItems.length ? (
+          <div className="windows-bridge-repo-list">
+            {repoItems.map((repo) => (
+              <article key={`${repo.name}-${repo.path}`} className="repo-evidence-task-row has-evidence windows-bridge-repo-row">
+                <div className="repo-evidence-task-main">
+                  <div>
+                    <div className="repo-evidence-task-heading">
+                      <span className="repo-evidence-task-label">{readServiceString(repo.name, "Unknown repo")}</span>
+                      <span className={`status-badge ${getBridgeRepoTone(repo)}`}>
+                        {repo.clean === true ? "clean" : repo.dirty === true ? "dirty" : "unknown"}
+                      </span>
+                    </div>
+                    <p className="repo-evidence-provenance">
+                      windows-garage / repos.status / checked {formatRepoEvidenceCheckedTime(bridgeRepoStatus?.checkedAt)}
+                    </p>
+                  </div>
+                </div>
+                <div className="worker-summary-detail-grid windows-bridge-repo-meta">
+                  <div className="detail-item">
+                    <span className="detail-label">Path</span>
+                    <span className="detail-value" title={repo.path || ""}>{readServiceString(repo.path, "Not reported")}</span>
+                  </div>
+                  <div className="detail-item">
+                    <span className="detail-label">Branch</span>
+                    <span className="detail-value">{readServiceString(repo.branch, "Not reported")}</span>
+                  </div>
+                  <div className="detail-item">
+                    <span className="detail-label">Changed files</span>
+                    <span className="detail-value">{readServiceString(repo.changedFileCount, "Not reported")}</span>
+                  </div>
+                  <div className="detail-item">
+                    <span className="detail-label">Remote</span>
+                    <span className="detail-value" title={formatBridgeRepoRemote(repo)}>{formatBridgeRepoRemote(repo)}</span>
+                  </div>
+                </div>
+                <div className="repo-evidence-target">
+                  <span className="detail-label">Last commit</span>
+                  <span>{formatBridgeRepoLastCommit(repo)}</span>
+                </div>
+                {normalizeStringArray(repo.warnings).length ? (
+                  <div className="windows-bridge-warning-list">
+                    {normalizeStringArray(repo.warnings).map((warning) => (
+                      <span key={warning} className="status-badge status-warning windows-bridge-warning-chip" title={warning}>
+                        {warning}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+              </article>
+            ))}
+          </div>
+        ) : bridgeRepoStatus?.error ? (
+          <p className="worker-evidence-record-error">
+            {bridgeRepoStatus.error.code}: {bridgeRepoStatus.error.message}
+          </p>
+        ) : (
+          <div className="empty-state">No Windows repo evidence has been loaded yet.</div>
+        )}
+      </section>
     </section>
   );
 }
@@ -7090,6 +7766,7 @@ export default function App() {
                   restarts, rebuilds, repairs, migrations, deletes, or writes.
                 </p>
               </div>
+              <WindowsBridgeEvidencePanel />
               <RepositoryEvidencePanel />
               <WorkerEvidencePanel />
             </section>
@@ -7141,8 +7818,8 @@ export default function App() {
                     <span className="detail-label">Experimental ChatKit</span>
                     <h3 id="chatkit-proof-heading">Hosted Session</h3>
                   </div>
-                  <span className="status-badge status-info">
-                    {chatkitStatus?.status === "configured" ? "Assistant only" : "Prep only"}
+                  <span className={`status-badge ${getChatKitModeBadgeClass(chatkitStatus?.mode)}`}>
+                    {formatChatKitModeLabel(chatkitStatus?.mode)}
                   </span>
                 </div>
                 <p className="inline-note">
@@ -7155,7 +7832,7 @@ export default function App() {
                 />
                 <div className="chatkit-proof-divider" />
                 <div className="chatkit-proof-diagnostics">
-                  <span className="detail-label">Prep diagnostics</span>
+                  <span className="detail-label">Readiness diagnostics</span>
                   <p className="inline-note">
                     Keep the existing local proof-of-life and status checks as fallback diagnostics while the hosted session
                     integration settles.
@@ -7196,10 +7873,15 @@ export default function App() {
                         <span className="detail-value">{chatkitResult.mode || "prep"}</span>
                       </div>
                       <div className="detail-item">
+                        <span className="detail-label">Availability</span>
+                        <span className="detail-value">{chatkitResult.availability || "unavailable"}</span>
+                      </div>
+                      <div className="detail-item">
                         <span className="detail-label">Checked</span>
                         <span className="detail-value">{formatCreatedAt(chatkitResult.checkedAt)}</span>
                       </div>
                     </div>
+                    {chatkitResult.reason ? <p className="inline-note chatkit-proof-message">{chatkitResult.reason}</p> : null}
                     {chatkitResult.proofOfLife?.message ? (
                       <p className="inline-note chatkit-proof-message">{chatkitResult.proofOfLife.message}</p>
                     ) : null}
@@ -7220,6 +7902,12 @@ export default function App() {
                       <span className="assistant-context-fact">
                         <strong>Workflow:</strong>{" "}
                         {chatkitResult.configured?.workflowConfigured ? "configured server-side" : "not configured"}
+                      </span>
+                      <span className="assistant-context-fact">
+                        <strong>Missing:</strong>{" "}
+                        {Array.isArray(chatkitResult.missingConfig) && chatkitResult.missingConfig.length
+                          ? chatkitResult.missingConfig.join(", ")
+                          : "none"}
                       </span>
                     </div>
                   </div>

@@ -45,6 +45,38 @@ function loadTemporaryOperatorId() {
   }
 }
 
+function getModeBadgeClass(mode) {
+  if (mode === "configured") {
+    return "status-completed";
+  }
+
+  if (mode === "error") {
+    return "status-failed";
+  }
+
+  if (mode === "prep") {
+    return "status-warning";
+  }
+
+  return "status-unknown";
+}
+
+function formatModeLabel(mode) {
+  if (mode === "configured") {
+    return "Configured";
+  }
+
+  if (mode === "disabled") {
+    return "Disabled";
+  }
+
+  if (mode === "error") {
+    return "Error";
+  }
+
+  return "Prep";
+}
+
 function ChatKitSurface({ operatorId, selectedServiceLabel }) {
   const { control } = useChatKit({
     api: {
@@ -157,22 +189,68 @@ export default function ChatKitPanel({ status = null, selectedServiceLabel = "" 
     return undefined;
   }, []);
 
-  const isConfigured = status?.status === "configured";
-  const safeStatusMessage = cleanText(status?.error?.message);
+  const mode = cleanText(status?.mode) || "disabled";
+  const isConfigured = mode === "configured" && cleanText(status?.availability) === "session_ready";
+  const safeStatusMessage = cleanText(status?.reason || status?.error?.message);
+  const missingConfig = Array.isArray(status?.missingConfig) ? status.missingConfig : [];
+  const requirements = Array.isArray(status?.requirements) ? status.requirements : [];
+  const intentionallyDisabled = Array.isArray(status?.intentionallyDisabled) ? status.intentionallyDisabled : [];
+  const nextStep = cleanText(status?.nextStep);
   const panelSummary = useMemo(() => {
     if (isConfigured) {
       return "Hosted ChatKit session surface. Assistant-only, read-only.";
     }
 
-    return safeStatusMessage || "ChatKit remains in prep mode until backend session config is available.";
+    return safeStatusMessage || "ChatKit remains in readiness mode until backend session config is available.";
   }, [isConfigured, safeStatusMessage]);
+
+  const readinessCard = (
+    <div className="chatkit-readiness-card">
+      <div className="chatkit-panel-meta">
+        <span className={`status-badge ${getModeBadgeClass(mode)}`}>{formatModeLabel(mode)}</span>
+        <span className="status-badge status-info">{cleanText(status?.availability) || "unavailable"}</span>
+        <span className="inline-note">Backend-only credentials. Assistant-only surface.</span>
+      </div>
+      <p className="inline-note">{panelSummary}</p>
+      <div className="assistant-context-facts">
+        {requirements.map((requirement) => (
+          <span
+            key={requirement.name}
+            className={`assistant-context-fact ${requirement.configured ? "chatkit-fact-ready" : "chatkit-fact-missing"}`}
+          >
+            <strong>{requirement.name}:</strong> {requirement.configured ? "configured" : "missing"}
+          </span>
+        ))}
+      </div>
+      {missingConfig.length ? (
+        <div className="known-failure">
+          Missing config names only: <code>{missingConfig.join(", ")}</code>
+        </div>
+      ) : null}
+      {nextStep ? (
+        <div className="chatkit-next-step">
+          <span className="detail-label">Next safe step</span>
+          <p>{nextStep}</p>
+        </div>
+      ) : null}
+      {intentionallyDisabled.length ? (
+        <div className="chatkit-disabled-list">
+          {intentionallyDisabled.map((item) => (
+            <span key={item} className="status-badge status-unknown">
+              {item}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
 
   if (!isConfigured) {
     return (
       <div className="chatkit-panel-shell">
-        <p className="inline-note">{panelSummary}</p>
+        {readinessCard}
         <div className="known-failure">
-          ChatKit remains unavailable. Diagnostics below still reflect the local prep routes only.
+          Hosted sessions remain unavailable. The diagnostics below still reflect local readiness routes only.
         </div>
       </div>
     );
@@ -181,7 +259,7 @@ export default function ChatKitPanel({ status = null, selectedServiceLabel = "" 
   if (scriptError) {
     return (
       <div className="chatkit-panel-shell">
-        <p className="inline-note">{panelSummary}</p>
+        {readinessCard}
         <div className="known-failure">{scriptError}</div>
       </div>
     );
@@ -190,7 +268,7 @@ export default function ChatKitPanel({ status = null, selectedServiceLabel = "" 
   if (!scriptReady) {
     return (
       <div className="chatkit-panel-shell">
-        <p className="inline-note">{panelSummary}</p>
+        {readinessCard}
         <div className="inline-note">Loading ChatKit client assets...</div>
       </div>
     );
@@ -198,8 +276,9 @@ export default function ChatKitPanel({ status = null, selectedServiceLabel = "" 
 
   return (
     <div className="chatkit-panel-shell">
+      {readinessCard}
       <div className="chatkit-panel-meta">
-        <span className="status-badge status-completed">Hosted session ready</span>
+        <span className="status-badge status-completed">Hosted session enabled</span>
         <span className="inline-note">Temporary local operator identifier in use for this browser.</span>
       </div>
       <ChatKitSurface operatorId={operatorId} selectedServiceLabel={selectedServiceLabel} />
