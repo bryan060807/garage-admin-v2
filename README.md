@@ -35,6 +35,11 @@ Optional:
 - `FRONTEND_ORIGIN`
 - `ADMIN_BRIDGE_TIMEOUT_MS`
 - `ADMIN_BRIDGE_ACTION_TIMEOUT_MS`
+- `WINDOWS_ADMIN_BASE_URL`
+- `WINDOWS_ADMIN_AUTH_TOKEN`
+- `WINDOWS_GARAGE_BASE_URL`
+- `WINDOWS_GARAGE_API_KEY`
+- `WINDOWS_BRIDGE_TIMEOUT_MS`
 - `WINDOWS_EXECUTOR_TIMEOUT_MS`
 - `WINDOWS_VERIFICATION_TIMEOUT_MS`
 - `VITE_ENABLE_EXPERIMENTAL_LAYOUT_CUSTOMIZATION`
@@ -198,6 +203,10 @@ Useful scripts:
 - `GET /api/services`
 - `GET /api/bridge/health`
 - `GET /api/bridge/logs/:service`
+- `GET /api/windows-bridge/health`
+- `GET /api/windows-bridge/services/:service/status`
+- `GET /api/windows-bridge/repos`
+- `GET /api/windows-bridge/repos/status`
 - `POST /api/actions`
 - `POST /api/actions/:id/approve`
 - `POST /api/actions/:id/execute`
@@ -236,6 +245,19 @@ Useful scripts:
 - Keep `restartSupported` set to `false` by default. Only enable it after the PM2 name and restart behavior have been confirmed on the Windows host.
 - Do not add generic shell execution. All restart behavior must stay inside the PM2 allowlist used by `backend/src/lib/windowsExecutor.js`.
 - Prefer local read-only checks first. Add a dedicated health URL only if the runtime already exposes one.
+
+## Windows Bridge Evidence
+
+- Garage Admin V2 now includes a read-only Windows bridge evidence surface for Windows runtime visibility.
+- The frontend calls Garage Admin V2 backend routes only. It does not call `windows-admin` or `windows-garage` hostnames directly.
+- Windows bridge credentials stay backend-only through `WINDOWS_ADMIN_AUTH_TOKEN` and `WINDOWS_GARAGE_API_KEY`.
+- The first-pass route family is intentionally narrow:
+  - `GET /api/windows-bridge/health`
+  - `GET /api/windows-bridge/services/:service/status`
+  - `GET /api/windows-bridge/repos`
+  - `GET /api/windows-bridge/repos/status`
+- Service status lookups are allowlisted and read-only. Repo visibility is evidence-only.
+- Restart, write, repair, rebuild, log-tail, approval, and other state-changing Windows actions remain out of scope for this bridge slice and must stay in the existing Service Actions workflow when supported.
 
 ## Actions
 

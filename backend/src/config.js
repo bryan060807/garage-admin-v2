@@ -21,6 +21,12 @@ module.exports = {
   bridgeToken: process.env.ADMIN_BRIDGE_TOKEN || "",
   bridgeTimeoutMs: coerceNumber(process.env.ADMIN_BRIDGE_TIMEOUT_MS, 10000),
   bridgeActionTimeoutMs: coerceNumber(process.env.ADMIN_BRIDGE_ACTION_TIMEOUT_MS, 30000),
+  windowsAdminBaseUrl: process.env.WINDOWS_ADMIN_BASE_URL || "",
+  windowsAdminAuthToken: process.env.WINDOWS_ADMIN_AUTH_TOKEN || "",
+  windowsGarageBaseUrl: process.env.WINDOWS_GARAGE_BASE_URL || "",
+  windowsGarageApiKey: process.env.WINDOWS_GARAGE_API_KEY || "",
+  windowsBridgeTimeoutMs: coerceNumber(process.env.WINDOWS_BRIDGE_TIMEOUT_MS, 7000),
+  chatkitSessionTimeoutMs: coerceNumber(process.env.CHATKIT_SESSION_TIMEOUT_MS, 8000),
   windowsExecutorTimeoutMs: coerceNumber(process.env.WINDOWS_EXECUTOR_TIMEOUT_MS, 30000),
   windowsVerificationTimeoutMs: coerceNumber(process.env.WINDOWS_VERIFICATION_TIMEOUT_MS, 5000),
 };

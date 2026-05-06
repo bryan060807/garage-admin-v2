@@ -8,6 +8,7 @@ const config = require("./config");
 const { pool } = require("./db");
 const memoryRoutes = require("./routes/memory");
 const bridgeRoutes = require("./routes/bridge");
+const windowsBridgeRoutes = require("./routes/windowsBridge");
 const serviceRoutes = require("./routes/services");
 const actionRoutes = require("./routes/actions");
 const chatRoutes = require("./routes/chat");
@@ -42,6 +43,7 @@ app.get("/health", (_req, res) => {
 
 app.use("/api/memory", memoryRoutes);
 app.use("/api/bridge", bridgeRoutes);
+app.use("/api/windows-bridge", windowsBridgeRoutes);
 app.use("/api/services", serviceRoutes);
 app.use("/api/actions", actionRoutes);
 app.use("/api/chat", chatRoutes);
