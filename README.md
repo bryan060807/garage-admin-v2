@@ -343,6 +343,23 @@ If verification fails while the restart command completed, the action remains `c
   - restart paths
   - browser-side secrets or direct bridge calls
 
+## Fedora Worker Service-Name Contract
+
+- `fedora-infra` `systemd_status` is a read-only Fedora control-plane check. Treat it as a narrow allowlisted contract, not an arbitrary `systemctl` wrapper.
+- Current local runbooks and worker notes point to Fedora user-unit style names, not broad system service discovery.
+- Use base service names without `.service` unless the Fedora worker explicitly advertises another format.
+- Documented Fedora user-unit names already evidenced in local runbooks:
+  - `admin-proxy`
+  - `aibry-admin`
+  - `aibry-node-agent`
+  - `garage-bridge` when present
+  - `aibry-fedora-worker-agent`
+  - `aibry-worker-bootstrap`
+  - `aibry-fedora-repo-worker`
+- Do not assume host-level pulse labels are valid `systemd_status` targets. `system_pulse` may report broader host facts such as `sshd`, `docker`, or `podman`, but that does not prove `systemd_status` accepts those names.
+- Until the Fedora helper advertises an explicit allowlist through capabilities, operators should treat `docker`, `podman`, `sshd`, `nginx`, `cloudflared`, and `postgresql` as out of contract for `systemd_status` unless separately verified on the Fedora side.
+- Why `node-agent` probes likely failed: local Fedora runbooks refer to the user unit as `aibry-node-agent`, so the shorter label is likely not the accepted target name for `systemd_status`.
+
 ## Notes
 
 - No secrets are hardcoded.

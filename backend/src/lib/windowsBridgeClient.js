@@ -14,7 +14,9 @@ function sanitizeErrorMessage(value, fallback = "Bridge request failed.") {
 
   return String(value)
     .replace(/(token|secret|password|credential|api[-_]?key)\s*[:=]\s*[^\s"'`]+/gi, "$1: <redacted>")
-    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]{12,}/gi, "Bearer <redacted>");
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]{12,}/gi, "Bearer <redacted>")
+    .replace(/[A-Za-z]:\\[^\s"'`]+/g, "<redacted-path>")
+    .replace(/(?:\/[A-Za-z0-9._-]+){2,}/g, "<redacted-path>");
 }
 
 function normalizePayload(text) {
@@ -26,6 +28,31 @@ function normalizePayload(text) {
     return JSON.parse(text);
   } catch (_error) {
     return text;
+  }
+}
+
+function sanitizeConfiguredTarget(baseUrl, pathname = "") {
+  try {
+    const url = new URL(baseUrl);
+    const normalizedPath = pathname ? (pathname.startsWith("/") ? pathname : `/${pathname}`) : "/";
+
+    return {
+      protocol: url.protocol.replace(/:$/, ""),
+      host: url.hostname,
+      port: url.port || (url.protocol === "https:" ? "443" : url.protocol === "http:" ? "80" : ""),
+      basePath: url.pathname || "/",
+      requestPath: normalizedPath,
+      display: `${url.hostname}:${url.port || (url.protocol === "https:" ? "443" : url.protocol === "http:" ? "80" : "")}${normalizedPath}`,
+    };
+  } catch (_error) {
+    return {
+      protocol: "",
+      host: "",
+      port: "",
+      basePath: "",
+      requestPath: pathname || "",
+      display: "",
+    };
   }
 }
 
@@ -83,6 +110,7 @@ async function request(source, pathname, options = {}) {
   const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : config.windowsBridgeTimeoutMs;
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   const startedAt = Date.now();
+  const configuredTarget = sanitizeConfiguredTarget(settings.baseUrl, pathname);
 
   try {
     const headers = {
@@ -111,6 +139,10 @@ async function request(source, pathname, options = {}) {
       checkedAt,
       latencyMs: Date.now() - startedAt,
       httpStatus: response.status,
+      request: {
+        pathname,
+        configuredTarget,
+      },
       data,
       error: response.ok
         ? null
@@ -130,6 +162,10 @@ async function request(source, pathname, options = {}) {
       checkedAt,
       latencyMs: Date.now() - startedAt,
       httpStatus: isTimeout ? 504 : 502,
+      request: {
+        pathname,
+        configuredTarget,
+      },
       data: null,
       error: {
         code: isTimeout ? "bridge_timeout" : "bridge_request_failed",
@@ -153,6 +189,10 @@ function getWindowsGarageHealth(options = {}) {
   return request(WINDOWS_GARAGE_SOURCE, "/admin/health", options);
 }
 
+function getWindowsGarageMemorySelfCheck(options = {}) {
+  return request(WINDOWS_GARAGE_SOURCE, "/memory/self-check", options);
+}
+
 function getWindowsServiceStatus(serviceName, options = {}) {
   return request(
     WINDOWS_ADMIN_SOURCE,
@@ -172,7 +212,9 @@ module.exports = {
   getWindowsAdminHealth,
   getWindowsGaragePulse,
   getWindowsGarageHealth,
+  getWindowsGarageMemorySelfCheck,
   getWindowsRepos,
   getWindowsServiceStatus,
   routeError,
+  sanitizeConfiguredTarget,
 };

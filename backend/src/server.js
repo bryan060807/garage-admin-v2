@@ -15,6 +15,7 @@ const chatRoutes = require("./routes/chat");
 const chatkitRoutes = require("./routes/chatkit");
 const assistantRoutes = require("./routes/assistant");
 const workerRoutes = require("./routes/workers");
+const commandLineRoutes = require("./routes/commandLine");
 
 const app = express();
 const frontendDistPath = path.resolve(__dirname, "../../frontend/dist");
@@ -50,6 +51,7 @@ app.use("/api/chat", chatRoutes);
 app.use("/api/chatkit", chatkitRoutes);
 app.use("/api/assistant", assistantRoutes);
 app.use("/api/workers", workerRoutes);
+app.use("/api/command-line", commandLineRoutes);
 
 app.use(express.static(frontendDistPath));
 

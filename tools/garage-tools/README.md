@@ -65,6 +65,33 @@ Use `pwsh`, not Windows PowerShell 5.1, for new operator tooling:
 pwsh -NoProfile -Command "Import-Module .\tools\garage-tools\garage.psd1 -Force; Get-GarageServices"
 ```
 
+`garage-tools` targets the authenticated Fedora control plane directly through `AIBRY_ADMIN_BASE_URL`. It does not use Garage Admin V2 local worker routes such as `http://127.0.0.1:4010/api/workers/...`.
+
+If requests fail with connection-refused before any HTTP status is returned, check shell-level proxy variables first. A dead local proxy configuration such as `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` pointing at an unreachable loopback port will break `Invoke-RestMethod` even when the configured Fedora hostname and auth env vars are otherwise correct.
+
+Safe troubleshooting points:
+
+- Confirm only env presence, not values, for:
+  - `AIBRY_ADMIN_BASE_URL`
+  - `AIBRY_CF_ACCESS_CLIENT_ID`
+  - `AIBRY_CF_ACCESS_CLIENT_SECRET`
+  - `AIBRY_AUTH_TOKEN`
+- Confirm the resolved target shape from `Get-GarageConfig`:
+  - scheme
+  - host
+  - port
+  - base path
+- Check whether proxy env vars are present:
+  - `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`
+  - lowercase equivalents
+  - `NO_PROXY`
+
+For Windows-safe read-only Fedora evidence from the local operator host, prefer Garage Admin V2 local routes when they satisfy the task:
+
+- `GET http://127.0.0.1:4010/api/workers`
+- `GET http://127.0.0.1:4010/api/workers/fedora-infra/health`
+- `GET http://127.0.0.1:4010/api/workers/fedora-repo/health`
+
 `Restart-GarageService` is intentionally scoped to a service name and calls only `POST /admin/restart-service`. The module does not expose arbitrary command execution, file writes, shell access, or generic admin endpoints.
 
 ## Current Control-Plane Endpoints

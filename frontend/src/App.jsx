@@ -1,5 +1,6 @@
 ﻿import { Component, useEffect, useRef, useState } from "react";
 import ChatKitPanel from "./ChatKitPanel";
+import CommandLinePanel from "./CommandLinePanel";
 import {
   buildActionApprovalContext,
   buildActionApprovalContextFromReviewSnapshot,
@@ -65,6 +66,7 @@ const WORKSPACE_TABS = Object.freeze([
   { id: "overview", label: "Overview" },
   { id: "actions", label: "Actions" },
   { id: "workers", label: "Workers" },
+  { id: "command-line", label: "Command Line" },
   { id: "assistant", label: "Assistant" },
   { id: "evidence", label: "Logs / Evidence" },
 ]);
@@ -7770,6 +7772,8 @@ export default function App() {
               <RepositoryEvidencePanel />
               <WorkerEvidencePanel />
             </section>
+          ) : activeWorkspaceTab === "command-line" ? (
+            <CommandLinePanel />
           ) : activeWorkspaceTab === "assistant" ? (
             <section className="workspace-tab-panel workspace-tab-panel--assistant">
               <div className="workspace-tab-heading">
