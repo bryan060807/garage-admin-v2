@@ -496,6 +496,7 @@ function createRuntime(input, fallbackStatus, fallbackSource) {
     cpuPercent: pickNumber(runtimeInput, ["cpuPercent", "cpu_percent"], null),
     pid: pickNumber(runtimeInput, ["pid"], null),
     pmId: pickNumber(runtimeInput, ["pmId", "pm_id"], null),
+    health: pickString(runtimeInput, ["health"]) || null,
   });
 
   return runtime || { status: normalizeStatus(fallbackStatus) };
@@ -568,6 +569,7 @@ function mergeRuntime(existingRuntime, incomingRuntime, nextStatus) {
       cpuPercent: incoming.cpuPercent ?? existing.cpuPercent ?? null,
       pid: incoming.pid ?? existing.pid ?? null,
       pmId: incoming.pmId ?? existing.pmId ?? null,
+      health: incoming.health || existing.health || null,
     }) || { status: normalizeStatus(nextStatus) }
   );
 }
@@ -810,6 +812,12 @@ function inferServiceGroupKey(service, type) {
 }
 
 function deriveServiceStatus(service, runtime, health) {
+  const healthStatus = normalizeStatus(health?.status);
+
+  if (healthStatus === "degraded" || healthStatus === "errored") {
+    return healthStatus;
+  }
+
   const explicitStatus = normalizeStatus(service?.status);
 
   if (explicitStatus !== "unknown") {
@@ -845,7 +853,7 @@ function deriveServiceSeverity(service, setupHints = []) {
     return "disabled";
   }
 
-  if (/^(failed|stopped|error|unreachable|offline|crashed|missing)$/.test(status)) {
+  if (/^(failed|stopped|error|errored|unreachable|offline|crashed|missing)$/.test(status)) {
     return "failed";
   }
 
@@ -1177,6 +1185,11 @@ function finalizeService(service) {
     ...(provides.length > 0 ? { provides } : {}),
     ...(dependencies.length > 0 ? { dependencies } : {}),
     runtime,
+    restartCount: pickNumber(health, ["restartCount"], runtime.restarts),
+    uptimeSeconds: pickNumber(health, ["uptimeSeconds"], runtime.uptimeSeconds),
+    pid: pickNumber(health, ["pid"], runtime.pid),
+    warnings: Array.isArray(health?.warnings) ? health.warnings : [],
+    lastErrorHints: Array.isArray(health?.lastErrorHints) ? health.lastErrorHints : [],
     manager: manager || null,
     processName: processName || null,
     serviceGroupKey: classification.groupKey,
@@ -1533,6 +1546,7 @@ function resolveInventoryRuntime(definition, windowsSnapshot) {
 function resolveInventoryHealth(definition, windowsSnapshot) {
   const baseHealth = isObject(definition.health) ? { ...definition.health } : {};
   const liveChecks = windowsSnapshot?.services?.[serviceKey(definition.name)] || {};
+  const pm2 = isObject(liveChecks.pm2) ? liveChecks.pm2 : null;
   const checks = compactObject({
     localHttp: isObject(liveChecks.localHttp) ? liveChecks.localHttp : null,
     localPort: isObject(liveChecks.localPort) ? liveChecks.localPort : null,
@@ -1541,6 +1555,18 @@ function resolveInventoryHealth(definition, windowsSnapshot) {
   return (
     compactObject({
       ...baseHealth,
+      status: pickString(pm2, ["status"]) || baseHealth.status || null,
+      warnings: Array.isArray(pm2?.warnings) ? pm2.warnings : Array.isArray(baseHealth.warnings) ? baseHealth.warnings : null,
+      lastErrorHints:
+        Array.isArray(pm2?.lastErrorHints)
+          ? pm2.lastErrorHints
+          : Array.isArray(baseHealth.lastErrorHints)
+            ? baseHealth.lastErrorHints
+            : null,
+      restartCount: pickNumber(pm2, ["restartCount"], pickNumber(baseHealth, ["restartCount"], null)),
+      uptimeSeconds: pickNumber(pm2, ["uptimeSeconds"], pickNumber(baseHealth, ["uptimeSeconds"], null)),
+      pid: pickNumber(pm2, ["pid"], pickNumber(baseHealth, ["pid"], null)),
+      pm2Status: pickString(pm2, ["pm2Status"]) || baseHealth.pm2Status || null,
       checks,
       checkedAt:
         liveChecks.localHttp?.checkedAt ||

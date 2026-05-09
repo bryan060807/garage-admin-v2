@@ -1589,12 +1589,17 @@ function getServiceRuntimeSummary(service) {
   const runtime = toPlainObject(service.runtime);
   const parts = [];
   const pm2Status = readServiceString(runtime.pm2Status, runtime.status);
+  const healthStatus = readServiceString(service?.health?.status);
   const uptime = formatDurationSeconds(runtime.uptimeSeconds);
   const memory = runtime.memoryBytes != null ? formatBytes(runtime.memoryBytes) : "";
   const restarts = Number.isFinite(Number(runtime.restarts)) ? Number(runtime.restarts) : null;
 
   if (pm2Status) {
     parts.push(`PM2 ${pm2Status}`);
+  }
+
+  if (healthStatus && !["healthy", "unknown", pm2Status].includes(healthStatus)) {
+    parts.push(`health ${formatStatusLabel(healthStatus)}`);
   }
 
   if (uptime) {
@@ -1669,6 +1674,11 @@ function normalizeServiceItems(items) {
         inventory: toPlainObject(item?.inventory),
         metadata: toPlainObject(item?.metadata),
         health: toPlainObject(item?.health),
+        warnings: normalizeStringArray(item?.warnings),
+        lastErrorHints: normalizeStringArray(item?.lastErrorHints),
+        restartCount: readServiceNumber(item?.restartCount),
+        uptimeSeconds: readServiceNumber(item?.uptimeSeconds),
+        pid: readServiceNumber(item?.pid),
         provides: normalizeServiceRelationArray(item?.provides),
         dependencies: normalizeServiceRelationArray(item?.dependencies),
         runtime: toPlainObject(item?.runtime),
@@ -1720,6 +1730,7 @@ function getCompactServiceMeta(service) {
   const host = readServiceString(service.host);
   const manager = getServiceManager(service);
   const port = getServiceLocalPort(service);
+  const healthStatus = readServiceString(service?.health?.status);
 
   if (type) {
     parts.push(type);
@@ -1739,7 +1750,16 @@ function getCompactServiceMeta(service) {
     parts.push(`port ${port}`);
   }
 
+  if (healthStatus && ["degraded", "errored"].includes(healthStatus)) {
+    parts.push(formatStatusLabel(healthStatus));
+  }
+
   return parts.join(" Â· ");
+}
+
+function getPrimaryHealthWarning(service) {
+  const warnings = normalizeStringArray(service?.warnings || service?.health?.warnings);
+  return warnings[0] || "";
 }
 
 const SERVICE_SEVERITY_ORDER = {
@@ -1956,7 +1976,7 @@ function deriveServiceSeverity(service, setupHints = getServiceSetupHints(servic
     return "disabled";
   }
 
-  if (/^(failed|stopped|error|unreachable|offline|crashed|missing)$/.test(status)) {
+  if (/^(failed|stopped|error|errored|unreachable|offline|crashed|missing)$/.test(status)) {
     return "failed";
   }
 
@@ -4229,9 +4249,15 @@ function formatDependencyFreshnessLabel(value) {
 }
 
 function statusClassName(value) {
-  return `status-${String(value || "unknown")
+  const normalized = String(value || "unknown")
     .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "-")}`;
+    .replace(/[^a-z0-9_-]+/g, "-");
+
+  if (normalized === "errored") {
+    return "status-error";
+  }
+
+  return `status-${normalized}`;
 }
 
 function isAuditEntryFresh(entry, now = Date.now()) {
@@ -6444,6 +6470,9 @@ export default function App() {
         selectedServiceHost !== "unknown" ? `${selectedServiceHost} host` : "Unknown host",
         selectedServiceManager,
         selectedServicePort ? `port ${selectedServicePort}` : null,
+        selectedServiceRecord.health?.status && ["degraded", "errored"].includes(String(selectedServiceRecord.health.status).toLowerCase())
+          ? `PM2 health ${formatStatusLabel(selectedServiceRecord.health.status)}`
+          : null,
       ]
         .filter(Boolean)
         .join(" Â· ")
@@ -6547,6 +6576,26 @@ export default function App() {
           label: "Runtime",
           value: selectedServiceRuntimeSummary || "No runtime summary yet.",
         },
+        selectedServiceRecord.health?.status
+          ? {
+              label: "PM2 health",
+              value: formatStatusLabel(selectedServiceRecord.health.status),
+            }
+          : null,
+        getPrimaryHealthWarning(selectedServiceRecord)
+          ? {
+              label: "Warning",
+              value: getPrimaryHealthWarning(selectedServiceRecord),
+            }
+          : null,
+        normalizeStringArray(selectedServiceRecord.lastErrorHints || selectedServiceRecord.health?.lastErrorHints).length
+          ? {
+              label: "Error hint",
+              value: normalizeStringArray(selectedServiceRecord.lastErrorHints || selectedServiceRecord.health?.lastErrorHints)
+                .slice(0, 2)
+                .join(" | "),
+            }
+          : null,
         {
           label: "Local",
           value:
@@ -7652,9 +7701,12 @@ export default function App() {
                           <span className="service-meta" title={getCompactServiceMeta(service)}>
                             {getCompactServiceMeta(service)}
                           </span>
-                          {service.classification?.primarySetupHint ? (
-                            <span className="service-hint" title={service.classification.primarySetupHint}>
-                              {service.classification.primarySetupHint}
+                          {readServiceString(getPrimaryHealthWarning(service), service.classification?.primarySetupHint) ? (
+                            <span
+                              className="service-hint"
+                              title={readServiceString(getPrimaryHealthWarning(service), service.classification?.primarySetupHint)}
+                            >
+                              {readServiceString(getPrimaryHealthWarning(service), service.classification?.primarySetupHint)}
                             </span>
                           ) : null}
                         </button>

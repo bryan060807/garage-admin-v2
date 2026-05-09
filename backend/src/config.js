@@ -29,4 +29,7 @@ module.exports = {
   chatkitSessionTimeoutMs: coerceNumber(process.env.CHATKIT_SESSION_TIMEOUT_MS, 8000),
   windowsExecutorTimeoutMs: coerceNumber(process.env.WINDOWS_EXECUTOR_TIMEOUT_MS, 30000),
   windowsVerificationTimeoutMs: coerceNumber(process.env.WINDOWS_VERIFICATION_TIMEOUT_MS, 5000),
+  pm2MinHealthyUptimeSeconds: coerceNumber(process.env.PM2_MIN_HEALTHY_UPTIME_SECONDS, 30),
+  pm2FlappingRestartThreshold: coerceNumber(process.env.PM2_FLAPPING_RESTART_THRESHOLD, 5),
+  pm2HighRestartThreshold: coerceNumber(process.env.PM2_HIGH_RESTART_THRESHOLD, 20),
 };

@@ -1,7 +1,9 @@
 const { execFile } = require("child_process");
+const fs = require("fs/promises");
 const net = require("net");
 const { promisify } = require("util");
 const config = require("../config");
+const { classifyPm2Health, extractEaddrinuseHints } = require("./pm2Health");
 const windowsInventory = require("./windowsInventory");
 
 const execFileAsync = promisify(execFile);
@@ -14,6 +16,8 @@ const DEFAULT_LOG_LINES = 200;
 const MAX_LOG_LINES = 500;
 const OUTPUT_LIMIT = 12000;
 const RESTART_COMMAND = "pm2 restart <allowlisted-process> --update-env";
+const LOG_TAIL_BYTES = 8192;
+const RECENT_PM2_OBSERVATIONS = new Map();
 
 function serviceKey(value) {
   return String(value || "").trim().toLowerCase();
@@ -125,6 +129,10 @@ function runPm2(pm2Args, timeoutMs, maxBuffer) {
   const invocation = pm2Invocation(pm2Args);
 
   return execFileAsync(invocation.command, invocation.args, commandOptions(timeoutMs, maxBuffer));
+}
+
+function runNetstat(timeoutMs, maxBuffer = 512 * 1024) {
+  return execFileAsync("netstat.exe", ["-ano", "-p", "tcp"], commandOptions(timeoutMs, maxBuffer));
 }
 
 function errorMessage(error, fallback) {
@@ -275,6 +283,119 @@ function pm2ProcessSnapshot(processInfo, checkedAt) {
   };
 }
 
+async function readLogTail(filePath, maxBytes = LOG_TAIL_BYTES) {
+  const target = String(filePath || "").trim();
+
+  if (!target) {
+    return "";
+  }
+
+  try {
+    const handle = await fs.open(target, "r");
+
+    try {
+      const stats = await handle.stat();
+      const size = Number(stats?.size) || 0;
+
+      if (size <= 0) {
+        return "";
+      }
+
+      const length = Math.min(size, maxBytes);
+      const buffer = Buffer.alloc(length);
+      await handle.read(buffer, 0, length, size - length);
+      return buffer.toString("utf8");
+    } finally {
+      await handle.close();
+    }
+  } catch (_error) {
+    return "";
+  }
+}
+
+async function getRecentPm2ErrorHints(processInfo) {
+  const stderrPath = processInfo?.pm2_env?.pm_err_log_path;
+  const stdoutPath = processInfo?.pm2_env?.pm_out_log_path;
+  const combined = [await readLogTail(stderrPath), await readLogTail(stdoutPath)].filter(Boolean).join("\n");
+
+  if (!combined) {
+    return [];
+  }
+
+  return extractEaddrinuseHints(
+    combined
+      .split(/\r?\n/)
+      .map((line) => String(line || "").trim())
+      .filter(Boolean)
+      .slice(-40),
+  );
+}
+
+function parseListeningPorts(payload, requestedPorts = []) {
+  const requested = new Set(
+    requestedPorts
+      .map((port) => Number(port))
+      .filter((port) => Number.isFinite(port) && port > 0),
+  );
+  const ports = {};
+
+  for (const line of String(payload || "").split(/\r?\n/)) {
+    const match = line.match(/^\s*TCP\s+\S+:(\d+)\s+\S+\s+LISTENING\s+(\d+)\s*$/i);
+
+    if (!match) {
+      continue;
+    }
+
+    const port = Number(match[1]);
+    const pid = Number(match[2]);
+
+    if (!Number.isFinite(port) || !Number.isFinite(pid)) {
+      continue;
+    }
+
+    if (requested.size > 0 && !requested.has(port)) {
+      continue;
+    }
+
+    ports[port] = {
+      port,
+      pid,
+    };
+  }
+
+  return ports;
+}
+
+async function getListeningPortsSnapshot(ports = []) {
+  const checkedAt = new Date().toISOString();
+
+  if (process.platform !== "win32") {
+    return {
+      ok: false,
+      checkedAt,
+      ports: {},
+      error: "Listening port ownership is only available on the Windows operator host.",
+    };
+  }
+
+  try {
+    const execution = await runNetstat(resolveVerificationTimeoutMs());
+    return {
+      ok: true,
+      checkedAt,
+      ports: parseListeningPorts(execution.stdout, ports),
+      error: null,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      checkedAt,
+      ports: {},
+      error: errorMessage(error, "Listening port ownership query failed"),
+    };
+  }
+}
+
 async function getPm2ProcessStatuses(processNames = []) {
   const checkedAt = new Date().toISOString();
   const requestedNames = new Set(
@@ -287,6 +408,7 @@ async function getPm2ProcessStatuses(processNames = []) {
     const execution = await runPm2(["jlist"], resolveVerificationTimeoutMs(), 512 * 1024);
     const processes = parsePm2ProcessList(execution.stdout);
     const statuses = {};
+    const processMap = {};
 
     for (const processInfo of processes) {
       const processName = String(processInfo?.name || "").trim();
@@ -301,12 +423,14 @@ async function getPm2ProcessStatuses(processNames = []) {
       }
 
       statuses[normalizedName] = pm2ProcessSnapshot(processInfo, checkedAt);
+      processMap[normalizedName] = processInfo;
     }
 
     return {
       ok: true,
       checkedAt,
       statuses,
+      processes: processMap,
       error: null,
     };
   } catch (error) {
@@ -314,6 +438,7 @@ async function getPm2ProcessStatuses(processNames = []) {
       ok: false,
       checkedAt,
       statuses: {},
+      processes: {},
       error: errorMessage(error, "PM2 status query failed"),
     };
   }
@@ -324,10 +449,16 @@ async function getWindowsRuntimeSnapshot(runtimeDefinitions = []) {
   const checkedAt = new Date().toISOString();
   const timeoutMs = resolveVerificationTimeoutMs();
   const pm2Snapshot = await getPm2ProcessStatuses(definitions.map((definition) => definition.processName));
+  const portSnapshot = await getListeningPortsSnapshot(definitions.map((definition) => definition.localPort));
 
   const services = {};
   const checks = await Promise.allSettled(
     definitions.map(async (definition) => {
+      const processKey = serviceKey(definition.processName || definition.serviceName);
+      const liveStatus = pm2Snapshot.statuses[processKey] || null;
+      const processInfo = pm2Snapshot.processes[processKey] || null;
+      const recentErrorHints = processInfo ? await getRecentPm2ErrorHints(processInfo) : [];
+      const portOwner = Number.isFinite(Number(definition.localPort)) ? portSnapshot.ports[Number(definition.localPort)] || null : null;
       const checkUrl = definition.healthUrl || definition.localUrl || null;
       const localHttp = checkUrl
         ? await verifyHttpUrl(checkUrl, timeoutMs, definition.healthUrl ? "health-url" : "local-url")
@@ -335,12 +466,54 @@ async function getWindowsRuntimeSnapshot(runtimeDefinitions = []) {
       const localPort = Number.isFinite(Number(definition.localPort))
         ? await checkLocalPort(Number(definition.localPort), timeoutMs)
         : null;
+      const pm2Health = liveStatus
+        ? classifyPm2Health(
+            {
+              pm2Status: liveStatus.pm2Status || liveStatus.status,
+              uptimeSeconds: liveStatus.uptimeSeconds,
+              restartCount: liveStatus.restarts,
+              pid: liveStatus.pid,
+              port: definition.localPort,
+              portOwnerPid: portOwner?.pid ?? null,
+              lastErrorHints: recentErrorHints,
+            },
+            {
+              minHealthyUptimeSeconds: config.pm2MinHealthyUptimeSeconds,
+              flappingRestartThreshold: config.pm2FlappingRestartThreshold,
+              highRestartThreshold: config.pm2HighRestartThreshold,
+            },
+            RECENT_PM2_OBSERVATIONS.get(processKey) || null,
+          )
+        : {
+            status: pm2Snapshot.ok ? "errored" : "unknown",
+            warnings: pm2Snapshot.ok ? ["PM2 process is missing from the current process list."] : [],
+            lastErrorHints: [],
+            restartCount: null,
+            uptimeSeconds: null,
+            pid: null,
+            pm2Status: pm2Snapshot.ok ? "missing" : "unknown",
+          };
+
+      if (liveStatus) {
+        RECENT_PM2_OBSERVATIONS.set(processKey, {
+          restartCount: liveStatus.restarts,
+          checkedAt,
+        });
+      }
 
       return {
         key: serviceKey(definition.serviceName),
         checks: {
           localHttp,
-          localPort,
+          localPort: localPort
+            ? {
+                ...localPort,
+                ownerPid: portOwner?.pid ?? null,
+                ownerMatchesPm2Pid:
+                  portOwner?.pid != null && pm2Health.pid != null ? portOwner.pid === pm2Health.pid : null,
+              }
+            : null,
+          pm2: pm2Health,
         },
       };
     }),
@@ -358,8 +531,9 @@ async function getWindowsRuntimeSnapshot(runtimeDefinitions = []) {
     ok: pm2Snapshot.ok,
     checkedAt,
     pm2: pm2Snapshot,
+    ports: portSnapshot,
     services,
-    error: pm2Snapshot.error || null,
+    error: pm2Snapshot.error || portSnapshot.error || null,
   };
 }
 
