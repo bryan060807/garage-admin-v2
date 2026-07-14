@@ -38,6 +38,7 @@ Optional:
 - `WINDOWS_ADMIN_BASE_URL`
 - `WINDOWS_ADMIN_AUTH_TOKEN`
 - `WINDOWS_GARAGE_BASE_URL`
+- `WINDOWS_GARAGE_LOOPBACK_BASE_URL`
 - `WINDOWS_GARAGE_API_KEY`
 - `WINDOWS_BRIDGE_TIMEOUT_MS`
 - `WINDOWS_EXECUTOR_TIMEOUT_MS`
@@ -65,7 +66,7 @@ npm run dev
 
 This starts:
 
-- backend on `http://127.0.0.1:4010`
+- backend on `http://127.0.0.1:3010`
 - frontend on `http://127.0.0.1:5173`
 
 The frontend proxies `/api/*` to the backend in development.
@@ -94,13 +95,13 @@ npm run start:backend
 Open the UI at:
 
 ```text
-http://127.0.0.1:4010
+http://127.0.0.1:3010
 ```
 
 The backend health response includes `frontendDistReady`; it should be `true` after `npm run build`.
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:4010/health
+Invoke-RestMethod http://127.0.0.1:3010/health
 ```
 
 ### PM2 runtime
@@ -143,7 +144,7 @@ Save the current PM2 process list after a successful start:
 npm run runtime:save
 ```
 
-`ecosystem.config.cjs` runs `backend/src/server.js` as `garage-admin-v2` with `NODE_ENV=production`, `autorestart`, restart delay, and memory restart protection. Runtime config still comes from `.env` and backend defaults; the default app port is `4010`.
+`ecosystem.config.cjs` runs `backend/src/server.js` as `garage-admin-v2` with `NODE_ENV=production`, explicit `PORT=3010`, `autorestart`, restart delay, and memory restart protection. Runtime config still comes from process env, `.env`, and backend defaults; the default app port is `3010`.
 
 ### Startup and recovery checklist
 
@@ -155,7 +156,7 @@ npm install
 npm run db:schema
 npm run build
 npm run runtime:start
-Invoke-RestMethod http://127.0.0.1:4010/health
+Invoke-RestMethod http://127.0.0.1:3010/health
 pm2 status garage-admin-v2
 ```
 
@@ -175,7 +176,7 @@ without changing app data:
 pm2 delete garage-admin-v2
 pm2 resurrect
 pm2 status garage-admin-v2
-Invoke-RestMethod http://127.0.0.1:4010/health
+Invoke-RestMethod http://127.0.0.1:3010/health
 ```
 
 If resurrect does not restore the process, run `npm run runtime:start`, re-check
@@ -207,6 +208,7 @@ Useful scripts:
 - `GET /api/windows-bridge/services/:service/status`
 - `GET /api/windows-bridge/repos`
 - `GET /api/windows-bridge/repos/status`
+- `GET /api/windows-bridge/memory/self-check`
 - `POST /api/actions`
 - `POST /api/actions/:id/approve`
 - `POST /api/actions/:id/execute`
@@ -251,12 +253,19 @@ Useful scripts:
 - Garage Admin V2 now includes a read-only Windows bridge evidence surface for Windows runtime visibility.
 - The frontend calls Garage Admin V2 backend routes only. It does not call `windows-admin` or `windows-garage` hostnames directly.
 - Windows bridge credentials stay backend-only through `WINDOWS_ADMIN_AUTH_TOKEN` and `WINDOWS_GARAGE_API_KEY`.
+- `WINDOWS_ADMIN_BASE_URL` should target the Windows admin bridge on `127.0.0.1:3105` from this Windows runtime. The public `windows-admin.aibry.shop` Cloudflare Tunnel must also target `127.0.0.1:3105`; an unauthenticated `GET /admin/health` through that hostname is expected to return `401`.
+- `WINDOWS_GARAGE_BASE_URL` should target the local Windows Garage API helper on `127.0.0.1:5100`. Do not route `windows-admin.aibry.shop` to this port.
+- Windows Garage helper calls may retry `WINDOWS_GARAGE_LOOPBACK_BASE_URL` for route-level upstream `not_found` responses, keeping same-host memory probes off the public tunnel path.
+- `WINDOWS_ADMIN_BASE_URL` and `WINDOWS_GARAGE_BASE_URL` must target Windows helper services, not Garage Admin V2 `/api/windows-bridge` routes; self-referential bridge URLs are rejected before any upstream request to prevent recursive local timeouts.
+- The Windows Garage API helper should run under PM2 with Waitress on `127.0.0.1:5100`. Repeated Flask development-server startup banners in PM2 logs indicate the helper is being launched through the Flask built-in server instead of the production WSGI runner.
+- Cloudflare WARP is not required for these Windows bridge checks. Keep routing simple: Windows loopback for local helper calls, Cloudflare Tunnel only for intended public ingress.
 - The first-pass route family is intentionally narrow:
   - `GET /api/windows-bridge/health`
   - `GET /api/windows-bridge/services/:service/status`
   - `GET /api/windows-bridge/repos`
   - `GET /api/windows-bridge/repos/status`
-- Service status lookups are allowlisted and read-only. Repo visibility is evidence-only.
+  - `GET /api/windows-bridge/memory/self-check`
+- Service status lookups are allowlisted and read-only. Repo visibility and memory self-check evidence are summary-only.
 - Restart, write, repair, rebuild, log-tail, approval, and other state-changing Windows actions remain out of scope for this bridge slice and must stay in the existing Service Actions workflow when supported.
 
 ## Actions

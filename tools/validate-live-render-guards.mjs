@@ -1,4 +1,4 @@
-const baseUrl = process.argv[2] || "http://127.0.0.1:4010";
+const baseUrl = process.argv[2] || "http://127.0.0.1:3010";
 const SERVICE_GROUP_ORDER = ["api", "ui-apps", "admin", "infrastructure"];
 
 function normalizeCollection(value) {

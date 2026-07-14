@@ -16,6 +16,8 @@ module.exports = {
       time: true,
       env: {
         NODE_ENV: "production",
+        PORT: "3010",
+        FRONTEND_ORIGIN: "http://127.0.0.1:3010",
       },
     },
   ],

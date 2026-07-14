@@ -20,3 +20,4 @@ backend/dist/
 .pm2/
 .DS_Store
 Thumbs.db
+*.lnk
