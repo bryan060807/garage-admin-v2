@@ -74,7 +74,32 @@ function parseWorkerList() {
       description: "Read-only Fedora repository evidence via the Garage helper.",
       registrySource: "built-in worker registry",
     },
+    {
+      id: "aibry-fedora-worker-agent",
+      name: "AIBRY Fedora Worker Agent",
+      host: "fedora",
+      role: "observability",
+      baseUrl: fedoraWorkerBaseUrl,
+      authHeader: fedoraWorkerAuthHeader,
+      authTokenEnv: fedoraWorkerAuthTokenEnv,
+      transport: fedoraWorkerTransport,
+      description: fedoraGarageApiUrl
+        ? "Read-only Fedora observability evidence via the Garage helper."
+        : "Read-only Fedora observability evidence via guarded admin-proxy routes.",
+      registrySource: "built-in worker registry",
+    },
   ];
+}
+
+function isFedoraLocalAdminProxyUrl(baseUrl) {
+  let parsed;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    return false;
+  }
+
+  return parsed.port === "4000";
 }
 
 function publicWorker(worker) {
@@ -107,5 +132,6 @@ function getWorkerById(id) {
 module.exports = {
   getWorkers,
   getWorkerById,
+  isFedoraLocalAdminProxyUrl,
   publicWorker,
 };

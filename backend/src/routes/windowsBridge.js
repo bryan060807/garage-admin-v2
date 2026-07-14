@@ -1,7 +1,7 @@
 const express = require("express");
+const config = require("../config");
 const windowsBridgeClient = require("../lib/windowsBridgeClient");
 
-const REQUEST_TIMEOUT_MS = 7000;
 const ALLOWED_SERVICE_NAMES = new Set([
   "garage-admin-v2",
   "windows-aibry-admin",
@@ -41,6 +41,12 @@ function asyncRoute(handler) {
     } catch (error) {
       next(error);
     }
+  };
+}
+
+function bridgeRequestOptions() {
+  return {
+    timeoutMs: config.windowsBridgeTimeoutMs,
   };
 }
 
@@ -531,13 +537,13 @@ function createRouter(client = windowsBridgeClient) {
     asyncRoute(async (_req, res) => {
       const [adminHealth, garagePulse, garageHealth] = await Promise.all([
         safeBridgeCheck(client.WINDOWS_ADMIN_SOURCE, () =>
-          client.getWindowsAdminHealth({ timeoutMs: REQUEST_TIMEOUT_MS }),
+          client.getWindowsAdminHealth(bridgeRequestOptions()),
         ),
         safeBridgeCheck(client.WINDOWS_GARAGE_SOURCE, () =>
-          client.getWindowsGaragePulse({ timeoutMs: REQUEST_TIMEOUT_MS }),
+          client.getWindowsGaragePulse(bridgeRequestOptions()),
         ),
         safeBridgeCheck(client.WINDOWS_GARAGE_SOURCE, () =>
-          client.getWindowsGarageHealth({ timeoutMs: REQUEST_TIMEOUT_MS }),
+          client.getWindowsGarageHealth(bridgeRequestOptions()),
         ),
       ]);
 
@@ -559,7 +565,7 @@ function createRouter(client = windowsBridgeClient) {
         });
       }
 
-      const result = await client.getWindowsServiceStatus(serviceName, { timeoutMs: REQUEST_TIMEOUT_MS });
+      const result = await client.getWindowsServiceStatus(serviceName, bridgeRequestOptions());
       const payload = normalizeServiceStatus(serviceName, result);
 
       res.status(upstreamStatusCode(result)).json(payload);
@@ -569,7 +575,7 @@ function createRouter(client = windowsBridgeClient) {
   router.get(
     "/repos",
     asyncRoute(async (_req, res) => {
-      const result = await client.getWindowsRepos(false, { timeoutMs: REQUEST_TIMEOUT_MS });
+      const result = await client.getWindowsRepos(false, bridgeRequestOptions());
       const payload = normalizeRepoResponse(result, false);
 
       res.status(upstreamStatusCode(result)).json(payload);
@@ -579,7 +585,7 @@ function createRouter(client = windowsBridgeClient) {
   router.get(
     "/repos/status",
     asyncRoute(async (_req, res) => {
-      const result = await client.getWindowsRepos(true, { timeoutMs: REQUEST_TIMEOUT_MS });
+      const result = await client.getWindowsRepos(true, bridgeRequestOptions());
       const payload = normalizeRepoResponse(result, true);
 
       res.status(upstreamStatusCode(result)).json(payload);
@@ -589,7 +595,7 @@ function createRouter(client = windowsBridgeClient) {
   router.get(
     "/memory/self-check",
     asyncRoute(async (_req, res) => {
-      const result = await client.getWindowsGarageMemorySelfCheck({ timeoutMs: REQUEST_TIMEOUT_MS });
+      const result = await client.getWindowsGarageMemorySelfCheck(bridgeRequestOptions());
 
       if (result.ok) {
         return res.status(200).json(normalizeMemorySelfCheckResponse(result));
@@ -601,7 +607,11 @@ function createRouter(client = windowsBridgeClient) {
 
   router.use((error, _req, res, next) => {
     if (!error.statusCode || !error.payload) {
-      if (error?.code === "bridge_base_url_missing" || error?.code === "bridge_auth_missing") {
+      if (
+        error?.code === "bridge_base_url_missing" ||
+        error?.code === "bridge_auth_missing" ||
+        error?.code === "bridge_self_reference"
+      ) {
         return res.status(503).json({
           ok: false,
           service: "windows-garage-api",
@@ -627,6 +637,7 @@ module.exports = router;
 module.exports.createRouter = createRouter;
 module.exports.__testables = {
   HEALTH_SOURCE_EXPECTATIONS,
+  bridgeRequestOptions,
   buildBridgeHealthPayload,
   buildConfiguredTarget,
   buildIdentityDrift,

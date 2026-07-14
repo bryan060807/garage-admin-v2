@@ -31,6 +31,41 @@ function normalizePayload(text) {
   }
 }
 
+function readPayloadErrorMessage(data, fallback = "Bridge request failed.") {
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    const upstreamError = data.error;
+
+    if (typeof upstreamError === "string") {
+      return upstreamError;
+    }
+
+    if (upstreamError && typeof upstreamError === "object" && !Array.isArray(upstreamError)) {
+      return upstreamError.message || upstreamError.error || upstreamError.code || fallback;
+    }
+
+    return data.message || data.errorMessage || data.statusText || data.detail || fallback;
+  }
+
+  if (typeof data === "string" && data.trim()) {
+    return data;
+  }
+
+  return fallback;
+}
+
+function readPayloadErrorCode(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return "";
+  }
+
+  const upstreamError = data.error;
+  if (upstreamError && typeof upstreamError === "object" && !Array.isArray(upstreamError)) {
+    return String(upstreamError.code || "").trim();
+  }
+
+  return String(data.code || data.errorCode || "").trim();
+}
+
 function sanitizeConfiguredTarget(baseUrl, pathname = "") {
   try {
     const url = new URL(baseUrl);
@@ -53,6 +88,16 @@ function sanitizeConfiguredTarget(baseUrl, pathname = "") {
       requestPath: pathname || "",
       display: "",
     };
+  }
+}
+
+function isGarageAdminBridgeRouteBaseUrl(baseUrl) {
+  try {
+    const url = new URL(baseUrl);
+    const pathname = url.pathname.replace(/\/+$/, "") || "/";
+    return pathname === "/api/windows-bridge" || pathname.startsWith("/api/windows-bridge/");
+  } catch (_error) {
+    return false;
   }
 }
 
@@ -96,6 +141,14 @@ function requireBridgeConfig(source) {
     throw routeError("bridge_base_url_missing", `${source} base URL is not configured.`, { source });
   }
 
+  if (isGarageAdminBridgeRouteBaseUrl(settings.baseUrl)) {
+    throw routeError(
+      "bridge_self_reference",
+      `${source} base URL must target the Windows helper service, not Garage Admin V2 bridge routes.`,
+      { source },
+    );
+  }
+
   if (!settings.token) {
     throw routeError("bridge_auth_missing", `${source} auth is not configured.`, { source });
   }
@@ -103,8 +156,7 @@ function requireBridgeConfig(source) {
   return settings;
 }
 
-async function request(source, pathname, options = {}) {
-  const settings = requireBridgeConfig(source);
+async function requestWithSettings(settings, pathname, options = {}, metadata = {}) {
   const checkedAt = new Date().toISOString();
   const controller = new AbortController();
   const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : config.windowsBridgeTimeoutMs;
@@ -135,13 +187,14 @@ async function request(source, pathname, options = {}) {
 
     return {
       ok: response.ok,
-      source,
+      source: settings.source,
       checkedAt,
       latencyMs: Date.now() - startedAt,
       httpStatus: response.status,
       request: {
         pathname,
         configuredTarget,
+        ...(metadata.fallbackFrom ? { fallbackFrom: metadata.fallbackFrom } : {}),
       },
       data,
       error: response.ok
@@ -149,7 +202,7 @@ async function request(source, pathname, options = {}) {
         : {
             code: `bridge_http_${response.status}`,
             message: sanitizeErrorMessage(
-              (typeof data === "object" && data && (data.error || data.message)) || response.statusText || "Bridge request failed.",
+              readPayloadErrorMessage(data, response.statusText || "Bridge request failed."),
             ),
           },
     };
@@ -158,13 +211,14 @@ async function request(source, pathname, options = {}) {
 
     return {
       ok: false,
-      source,
+      source: settings.source,
       checkedAt,
       latencyMs: Date.now() - startedAt,
       httpStatus: isTimeout ? 504 : 502,
       request: {
         pathname,
         configuredTarget,
+        ...(metadata.fallbackFrom ? { fallbackFrom: metadata.fallbackFrom } : {}),
       },
       data: null,
       error: {
@@ -175,6 +229,45 @@ async function request(source, pathname, options = {}) {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function shouldRetryWindowsGarageLoopback(source, settings, result, options = {}) {
+  if (source !== WINDOWS_GARAGE_SOURCE || options.allowLoopbackFallback === false) {
+    return false;
+  }
+
+  const fallbackBaseUrl = normalizeBaseUrl(config.windowsGarageLoopbackBaseUrl);
+  if (!fallbackBaseUrl || fallbackBaseUrl === settings.baseUrl) {
+    return false;
+  }
+
+  return result.httpStatus === 404 && readPayloadErrorCode(result.data) === "not_found";
+}
+
+async function request(source, pathname, options = {}) {
+  const settings = requireBridgeConfig(source);
+  const result = await requestWithSettings(settings, pathname, options);
+
+  if (!shouldRetryWindowsGarageLoopback(source, settings, result, options)) {
+    return result;
+  }
+
+  const fallbackSettings = {
+    ...settings,
+    baseUrl: normalizeBaseUrl(config.windowsGarageLoopbackBaseUrl),
+  };
+
+  return requestWithSettings(
+    fallbackSettings,
+    pathname,
+    {
+      ...options,
+      allowLoopbackFallback: false,
+    },
+    {
+      fallbackFrom: result.request?.configuredTarget,
+    },
+  );
 }
 
 function getWindowsAdminHealth(options = {}) {
@@ -215,6 +308,8 @@ module.exports = {
   getWindowsGarageMemorySelfCheck,
   getWindowsRepos,
   getWindowsServiceStatus,
+  readPayloadErrorCode,
+  readPayloadErrorMessage,
   routeError,
   sanitizeConfiguredTarget,
 };

@@ -1,5 +1,5 @@
 const express = require("express");
-const { getWorkers, getWorkerById, publicWorker } = require("../workerRegistry");
+const { getWorkers, getWorkerById, isFedoraLocalAdminProxyUrl, publicWorker } = require("../workerRegistry");
 
 const router = express.Router();
 
@@ -17,10 +17,17 @@ const ALLOWED_TASKS = new Set([
   "journal_tail",
   "podman_ps",
   "docker_ps",
+  "ss_listeners",
+  "systemd_list_units",
+  "systemd_timers_safe",
+  "podman_inspect_safe",
+  "backup_artifacts_safe",
 ]);
 
 const FEDORA_HELPER_UNREACHABLE_MESSAGE =
   "Fedora control-plane helper is unreachable from Windows. Check FEDORA_GARAGE_API_URL, FEDORA_GARAGE_API_KEY, and host reachability.";
+const FEDORA_LOCAL_ADMIN_PROXY_MESSAGE =
+  "Configured Fedora worker base URL points at the Fedora-local admin-proxy port 4000. From Windows, route through the existing reachable Garage helper/admin bridge base instead of direct port 4000 URLs such as 127.0.0.1:4000 or 192.168.1.187:4000.";
 
 function redactError(value) {
   if (value == null) return value;
@@ -73,10 +80,14 @@ function ensureLocalOrPrivateUrl(worker) {
   if (!allowed) {
     throw workerError(403, "worker_url_not_private", "Worker URL must be localhost or private network.");
   }
+
+  if (worker.host === "fedora" && worker.transport === "fedora-admin-proxy" && isFedoraLocalAdminProxyUrl(worker.baseUrl)) {
+    throw workerError(503, "fedora_admin_proxy_local_only", FEDORA_LOCAL_ADMIN_PROXY_MESSAGE);
+  }
 }
 
 function getWorkerRequestPath(worker, kind) {
-  if (worker.transport === "fedora-garage-helper") {
+  if (worker.transport === "fedora-garage-helper" || worker.transport === "fedora-admin-proxy") {
     return `/admin/fedora-workers/${worker.id}/${kind}`;
   }
 
@@ -127,7 +138,7 @@ async function callWorker(worker, token, kind, options = {}) {
     };
   } catch (error) {
     const isTimeout = error?.name === "AbortError";
-    const isFedoraHelper = worker.transport === "fedora-garage-helper";
+    const isFedoraHelper = worker.transport === "fedora-garage-helper" || worker.transport === "fedora-admin-proxy";
 
     return {
       ok: false,

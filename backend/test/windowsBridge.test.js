@@ -79,6 +79,7 @@ test("windows garage health uses WINDOWS_GARAGE_BASE_URL instead of WINDOWS_ADMI
       windowsAdminBaseUrl: "http://127.0.0.1:3105",
       windowsAdminAuthToken: "admin-token",
       windowsGarageBaseUrl: "http://127.0.0.1:5100",
+      windowsGarageLoopbackBaseUrl: "http://127.0.0.1:5100",
       windowsGarageApiKey: "garage-token",
       windowsBridgeTimeoutMs: 50,
     },
@@ -113,6 +114,7 @@ test("windows admin health uses WINDOWS_ADMIN_BASE_URL", async () => {
       windowsAdminBaseUrl: "http://127.0.0.1:3105",
       windowsAdminAuthToken: "admin-token",
       windowsGarageBaseUrl: "http://127.0.0.1:5100",
+      windowsGarageLoopbackBaseUrl: "http://127.0.0.1:5100",
       windowsGarageApiKey: "garage-token",
       windowsBridgeTimeoutMs: 50,
     },
@@ -141,12 +143,48 @@ test("windows admin health uses WINDOWS_ADMIN_BASE_URL", async () => {
   );
 });
 
+test("windows admin bridge rejects self-referential bridge base URL", async () => {
+  await withConfig(
+    {
+      windowsAdminBaseUrl: "http://127.0.0.1:4010/api/windows-bridge",
+      windowsAdminAuthToken: "admin-token",
+      windowsGarageBaseUrl: "http://127.0.0.1:5100",
+      windowsGarageLoopbackBaseUrl: "http://127.0.0.1:5100",
+      windowsGarageApiKey: "garage-token",
+      windowsBridgeTimeoutMs: 50,
+    },
+    async () => {
+      let fetchCalled = false;
+
+      await withMockFetch(
+        async () => {
+          fetchCalled = true;
+          return createJsonResponse({ ok: true });
+        },
+        async () => {
+          await assert.rejects(
+            () => windowsBridgeClient.getWindowsAdminHealth(),
+            (error) => {
+              assert.equal(error.code, "bridge_self_reference");
+              assert.equal(error.source, "windows-admin");
+              return true;
+            },
+          );
+        },
+      );
+
+      assert.equal(fetchCalled, false);
+    },
+  );
+});
+
 test("windows garage memory self-check uses WINDOWS_GARAGE_BASE_URL and X-API-KEY", async () => {
   await withConfig(
     {
       windowsAdminBaseUrl: "http://127.0.0.1:3105",
       windowsAdminAuthToken: "admin-token",
       windowsGarageBaseUrl: "http://127.0.0.1:5100",
+      windowsGarageLoopbackBaseUrl: "http://127.0.0.1:5100",
       windowsGarageApiKey: "garage-token",
       windowsBridgeTimeoutMs: 50,
     },
@@ -176,6 +214,171 @@ test("windows garage memory self-check uses WINDOWS_GARAGE_BASE_URL and X-API-KE
       assert.equal(calls[0].url, "http://127.0.0.1:5100/memory/self-check");
       assert.equal(calls[0].headers["X-API-KEY"], "garage-token");
       assert.equal(calls[0].headers["x-aibry-auth"], undefined);
+    },
+  );
+});
+
+test("windows garage client returns structured timeout errors", async () => {
+  await withConfig(
+    {
+      windowsAdminBaseUrl: "http://127.0.0.1:3105",
+      windowsAdminAuthToken: "admin-token",
+      windowsGarageBaseUrl: "http://127.0.0.1:5100",
+      windowsGarageLoopbackBaseUrl: "http://127.0.0.1:5100",
+      windowsGarageApiKey: "garage-token",
+      windowsBridgeTimeoutMs: 50,
+    },
+    async () => {
+      await withMockFetch(
+        async () => {
+          const error = new Error("This operation was aborted");
+          error.name = "AbortError";
+          throw error;
+        },
+        async () => {
+          const result = await windowsBridgeClient.getWindowsGarageMemorySelfCheck();
+
+          assert.equal(result.ok, false);
+          assert.equal(result.source, "windows-garage");
+          assert.equal(result.httpStatus, 504);
+          assert.equal(result.error.code, "bridge_timeout");
+          assert.equal(result.error.message, "This operation was aborted");
+          assert.equal(result.request.configuredTarget.host, "127.0.0.1");
+          assert.equal(result.request.configuredTarget.port, "5100");
+        },
+      );
+    },
+  );
+});
+
+test("windows garage memory self-check rejects self-referential bridge base URL", async () => {
+  await withConfig(
+    {
+      windowsAdminBaseUrl: "http://127.0.0.1:3105",
+      windowsAdminAuthToken: "admin-token",
+      windowsGarageBaseUrl: "http://127.0.0.1:4010/api/windows-bridge",
+      windowsGarageLoopbackBaseUrl: "http://127.0.0.1:5100",
+      windowsGarageApiKey: "garage-token",
+      windowsBridgeTimeoutMs: 50,
+    },
+    async () => {
+      let fetchCalled = false;
+
+      await withMockFetch(
+        async () => {
+          fetchCalled = true;
+          return createJsonResponse({ ok: true });
+        },
+        async () => {
+          await assert.rejects(
+            () => windowsBridgeClient.getWindowsGarageMemorySelfCheck(),
+            (error) => {
+              assert.equal(error.code, "bridge_self_reference");
+              assert.equal(error.source, "windows-garage");
+              return true;
+            },
+          );
+        },
+      );
+
+      assert.equal(fetchCalled, false);
+    },
+  );
+});
+
+test("windows garage client extracts nested upstream not_found messages", async () => {
+  await withConfig(
+    {
+      windowsAdminBaseUrl: "http://127.0.0.1:3105",
+      windowsAdminAuthToken: "admin-token",
+      windowsGarageBaseUrl: "http://127.0.0.1:5100",
+      windowsGarageApiKey: "garage-token",
+      windowsBridgeTimeoutMs: 50,
+    },
+    async () => {
+      await withMockFetch(
+        async () =>
+          createJsonResponse(
+            {
+              status: "error",
+              error: {
+                code: "not_found",
+                message: "Route not found.",
+              },
+            },
+            404,
+          ),
+        async () => {
+          const result = await windowsBridgeClient.getWindowsGarageMemorySelfCheck({ allowLoopbackFallback: false });
+
+          assert.equal(result.ok, false);
+          assert.equal(result.httpStatus, 404);
+          assert.equal(result.error.code, "bridge_http_404");
+          assert.equal(result.error.message, "Route not found.");
+        },
+      );
+    },
+  );
+});
+
+test("windows garage route-level not_found retries the loopback helper without changing auth", async () => {
+  await withConfig(
+    {
+      windowsAdminBaseUrl: "http://127.0.0.1:3105",
+      windowsAdminAuthToken: "admin-token",
+      windowsGarageBaseUrl: "https://garage-helper.example.invalid",
+      windowsGarageLoopbackBaseUrl: "http://127.0.0.1:5100",
+      windowsGarageApiKey: "garage-token",
+      windowsBridgeTimeoutMs: 50,
+    },
+    async () => {
+      const calls = [];
+
+      await withMockFetch(
+        async (url, options = {}) => {
+          calls.push({
+            url,
+            headers: options.headers || {},
+          });
+
+          if (url === "https://garage-helper.example.invalid/memory/self-check") {
+            return createJsonResponse(
+              {
+                status: "error",
+                error: {
+                  code: "not_found",
+                  message: "Route not found.",
+                },
+              },
+              404,
+            );
+          }
+
+          return createJsonResponse({
+            ok: true,
+            service: "windows-garage-api",
+            activeMemory: { status: "ok" },
+            safety: { rootBound: true },
+          });
+        },
+        async () => {
+          const result = await windowsBridgeClient.getWindowsGarageMemorySelfCheck();
+
+          assert.equal(result.ok, true);
+          assert.equal(result.httpStatus, 200);
+          assert.equal(result.data.service, "windows-garage-api");
+          assert.equal(result.request.configuredTarget.host, "127.0.0.1");
+          assert.equal(result.request.configuredTarget.port, "5100");
+          assert.equal(result.request.fallbackFrom.host, "garage-helper.example.invalid");
+        },
+      );
+
+      assert.equal(calls.length, 2);
+      assert.equal(calls[0].url, "https://garage-helper.example.invalid/memory/self-check");
+      assert.equal(calls[1].url, "http://127.0.0.1:5100/memory/self-check");
+      assert.equal(calls[0].headers["X-API-KEY"], "garage-token");
+      assert.equal(calls[1].headers["X-API-KEY"], "garage-token");
+      assert.equal(calls[1].headers["x-aibry-auth"], undefined);
     },
   );
 });
@@ -296,6 +499,9 @@ test("health route includes provenance metadata and preserves compatibility fiel
 });
 
 test("memory self-check route forwards only the safe summary payload", async () => {
+  const previousTimeout = config.windowsBridgeTimeoutMs;
+  config.windowsBridgeTimeoutMs = 4321;
+  const capturedOptions = [];
   const stubClient = {
     WINDOWS_ADMIN_SOURCE: "windows-admin",
     WINDOWS_GARAGE_SOURCE: "windows-garage",
@@ -308,7 +514,8 @@ test("memory self-check route forwards only the safe summary payload", async () 
     async getWindowsGarageHealth() {
       throw new Error("not used");
     },
-    async getWindowsGarageMemorySelfCheck() {
+    async getWindowsGarageMemorySelfCheck(options) {
+      capturedOptions.push(options);
       return {
         ok: true,
         source: "windows-garage",
@@ -347,28 +554,33 @@ test("memory self-check route forwards only the safe summary payload", async () 
     },
   };
 
-  await withServer(windowsBridgeRoutes.createRouter(stubClient), async (baseUrl) => {
-    const response = await fetch(`${baseUrl}/api/windows-bridge/memory/self-check`);
-    const payload = await response.json();
+  try {
+    await withServer(windowsBridgeRoutes.createRouter(stubClient), async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/windows-bridge/memory/self-check`);
+      const payload = await response.json();
 
-    assert.equal(response.status, 200);
-    assert.equal(payload.ok, true);
-    assert.equal(payload.service, "windows-garage-api");
-    assert.deepEqual(payload.activeMemory, {
-      status: "ok",
-      fileCount: 3,
-      items: [{ label: "active" }],
+      assert.equal(response.status, 200);
+      assert.equal(payload.ok, true);
+      assert.equal(payload.service, "windows-garage-api");
+      assert.deepEqual(capturedOptions, [{ timeoutMs: 4321 }]);
+      assert.deepEqual(payload.activeMemory, {
+        status: "ok",
+        fileCount: 3,
+        items: [{ label: "active" }],
+      });
+      assert.deepEqual(payload.safety, {
+        exposedSecrets: false,
+        warnings: [],
+      });
+      assert.equal(payload.checkedAt, "2026-05-07T16:00:04.000Z");
+      assert.match(payload.summary, /Healthy at <redacted-path>/);
+      assert.equal(JSON.stringify(payload).includes("garage-token"), false);
+      assert.equal(JSON.stringify(payload).includes("secret-memory"), false);
+      assert.equal("contents" in payload, false);
     });
-    assert.deepEqual(payload.safety, {
-      exposedSecrets: false,
-      warnings: [],
-    });
-    assert.equal(payload.checkedAt, "2026-05-07T16:00:04.000Z");
-    assert.match(payload.summary, /Healthy at <redacted-path>/);
-    assert.equal(JSON.stringify(payload).includes("garage-token"), false);
-    assert.equal(JSON.stringify(payload).includes("secret-memory"), false);
-    assert.equal("contents" in payload, false);
-  });
+  } finally {
+    config.windowsBridgeTimeoutMs = previousTimeout;
+  }
 });
 
 test("memory self-check route returns safe structured error when config is missing", async () => {
@@ -388,6 +600,31 @@ test("memory self-check route returns safe structured error when config is missi
           service: "windows-garage-api",
           code: "bridge_base_url_missing",
           message: "windows-garage base URL is not configured.",
+          source: "windows-garage",
+          status: 503,
+        });
+      });
+    },
+  );
+});
+
+test("memory self-check route returns safe structured error for self-referential config", async () => {
+  await withConfig(
+    {
+      windowsGarageBaseUrl: "http://127.0.0.1:4010/api/windows-bridge",
+      windowsGarageApiKey: "garage-token",
+    },
+    async () => {
+      await withServer(windowsBridgeRoutes, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/windows-bridge/memory/self-check`);
+        const payload = await response.json();
+
+        assert.equal(response.status, 503);
+        assert.deepEqual(payload, {
+          ok: false,
+          service: "windows-garage-api",
+          code: "bridge_self_reference",
+          message: "windows-garage base URL must target the Windows helper service, not Garage Admin V2 bridge routes.",
           source: "windows-garage",
           status: 503,
         });
