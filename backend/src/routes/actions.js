@@ -431,15 +431,62 @@ function unsupportedRestartForHost(serviceName, host) {
   };
 }
 
-async function restartServiceForHost(serviceName, host) {
-  const normalizedHost = normalizeHost(host, serviceName);
+async function resolveRestartCapability(serviceName) {
+  const services = await serviceDiscovery.listUnifiedServices();
+  const service =
+    (services.items || []).find((item) => serviceKey(item.name) === serviceKey(serviceName)) || null;
+  const capability = service?.capabilities?.restart || service?.restart || null;
 
-  if (normalizedHost === "fedora") {
-    return bridgeClient.restartService(serviceName);
+  return {
+    service,
+    capability,
+  };
+}
+
+function unsupportedRestartForCapability(serviceName, service, capability) {
+  const message =
+    capability?.reason ||
+    `Restart is not supported for ${service?.displayName || serviceName || "unknown"} from the current executor.`;
+
+  return {
+    ok: false,
+    status: 409,
+    data: {
+      code: "restart_unsupported",
+      message,
+      serviceName: service?.name || serviceName || null,
+      host: service?.host || "unknown",
+      executor: capability?.executor || null,
+      mode: capability?.mode || "unsupported",
+      suggestedSetupHint: capability?.setupHint || null,
+    },
+    error: message,
+    executor: capability?.executor || null,
+  };
+}
+
+async function restartServiceForHost(serviceName, host) {
+  const { service, capability } = await resolveRestartCapability(serviceName);
+
+  if (!service) {
+    return unsupportedRestartForCapability(serviceName, null, {
+      reason: `Service ${serviceName || "unknown"} was not found in the current service inventory.`,
+    });
   }
 
-  if (normalizedHost === "windows") {
-    return windowsExecutor.restartService(serviceName);
+  if (capability?.supported !== true) {
+    return unsupportedRestartForCapability(serviceName, service, capability);
+  }
+
+  const normalizedHost = normalizeHost(service.host || host, service.name || serviceName);
+  const executor = capability.executor || null;
+
+  if (executor === "fedora-bridge" || normalizedHost === "fedora") {
+    return bridgeClient.restartService(service.name || serviceName);
+  }
+
+  if (executor === "windows-local" || normalizedHost === "windows") {
+    return windowsExecutor.restartService(service.name || serviceName);
   }
 
   return unsupportedRestartForHost(serviceName, normalizedHost);
@@ -785,6 +832,7 @@ router.__testables = {
   createAction,
   mergeActionReviewIntoInput,
   mergeActionReviewSnapshots,
+  restartServiceForHost,
   sanitizeActionReviewSnapshot,
 };
 

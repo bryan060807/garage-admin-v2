@@ -1,9 +1,14 @@
+const fs = require("fs");
+const path = require("path");
+
+const dotenv = require("dotenv");
 const express = require("express");
 
 const config = require("../config");
 
 const router = express.Router();
 const CHATKIT_API_URL = "https://api.openai.com/v1/chatkit/sessions";
+const CHATKIT_ENV_PATH = path.resolve(__dirname, "../../../.env");
 
 const CHATKIT_SURFACE = "experimental-chatkit";
 const CHATKIT_POLICY = Object.freeze([
@@ -19,6 +24,7 @@ const CHATKIT_REQUIRED_CONFIG = Object.freeze([
   "OPENAI_API_KEY",
   "OPENAI_CHATKIT_WORKFLOW_ID",
 ]);
+const CHATKIT_OPTIONAL_CONFIG = Object.freeze(["OPENAI_CHATKIT_WORKFLOW_VERSION"]);
 
 function isEnabled(value) {
   return /^(1|true|yes|enabled)$/i.test(String(value || "").trim());
@@ -26,6 +32,54 @@ function isEnabled(value) {
 
 function cleanText(value) {
   return String(value || "").trim();
+}
+
+function readChatKitEnvValue(name) {
+  try {
+    const parsed = dotenv.parse(fs.readFileSync(CHATKIT_ENV_PATH));
+    return cleanText(parsed[name]);
+  } catch (_error) {
+    return "";
+  }
+}
+
+function getChatKitEnvValue(name) {
+  if (Object.prototype.hasOwnProperty.call(process.env, name)) {
+    return cleanText(process.env[name]);
+  }
+
+  return readChatKitEnvValue(name);
+}
+
+function cleanOpenAiApiKey() {
+  return getChatKitEnvValue("OPENAI_API_KEY")
+    .replace(/^Bearer\s+/i, "")
+    .replace(/^[\"']+|[\"']+$/g, "")
+    .trim();
+}
+
+function buildOpenAiAuthHeader() {
+  return `Bearer ${cleanOpenAiApiKey()}`;
+}
+
+function buildSafeUpstreamError(data) {
+  const error = data?.error || {};
+
+  return {
+    type: cleanText(error.type) || null,
+    code: cleanText(error.code) || null,
+    param: cleanText(error.param) || null,
+  };
+}
+
+function buildSafeTransportError(error) {
+  return {
+    name: cleanText(error?.name) || "UnknownError",
+    message: cleanText(error?.message).slice(0, 240) || null,
+    causeName: cleanText(error?.cause?.name) || null,
+    causeCode: cleanText(error?.cause?.code) || null,
+    causeMessage: cleanText(error?.cause?.message).slice(0, 240) || null,
+  };
 }
 
 function buildTemporaryChatKitUserId(req) {
@@ -43,9 +97,10 @@ function buildTemporaryChatKitUserId(req) {
 }
 
 function buildChatKitStatus() {
-  const apiKeyConfigured = Boolean(process.env.OPENAI_API_KEY);
-  const workflowConfigured = Boolean(process.env.OPENAI_CHATKIT_WORKFLOW_ID);
-  const experimentEnabled = isEnabled(process.env.CHATKIT_EXPERIMENTAL_ENABLED || process.env.CHATKIT_EXPERIMENT_ENABLED);
+  const apiKeyConfigured = Boolean(cleanOpenAiApiKey());
+  const workflowConfigured = Boolean(getChatKitEnvValue("OPENAI_CHATKIT_WORKFLOW_ID"));
+  const workflowVersion = getChatKitEnvValue("OPENAI_CHATKIT_WORKFLOW_VERSION");
+  const experimentEnabled = isEnabled(getChatKitEnvValue("CHATKIT_EXPERIMENTAL_ENABLED") || getChatKitEnvValue("CHATKIT_EXPERIMENT_ENABLED"));
   const missingConfig = [];
   const checkedAt = new Date().toISOString();
 
@@ -114,14 +169,21 @@ function buildChatKitStatus() {
     reason,
     missingConfig,
     missingConfigCount: missingConfig.length,
+    workflowVersionConfigured: Boolean(workflowVersion),
+    workflowVersionLabel: workflowVersion || "production",
     requirements: CHATKIT_REQUIRED_CONFIG.map((name) => ({
       name,
       configured: !missingConfig.includes(name),
+    })),
+    optionalConfig: CHATKIT_OPTIONAL_CONFIG.map((name) => ({
+      name,
+      configured: name === "OPENAI_CHATKIT_WORKFLOW_VERSION" ? Boolean(workflowVersion) : false,
     })),
     configured: {
       experimentEnabled,
       openaiApiKeyConfigured: apiKeyConfigured,
       workflowConfigured,
+      workflowVersionConfigured: Boolean(workflowVersion),
     },
     session: {
       endpoint: "/api/chatkit/session",
@@ -129,6 +191,7 @@ function buildChatKitStatus() {
       userMode: "temporary_local_operator_identifier",
       transport: "backend_only_client_secret",
       timeoutMs: config.chatkitSessionTimeoutMs,
+      workflowVersionLabel: workflowVersion || "production",
     },
     nextStep,
     intentionallyDisabled: [
@@ -145,7 +208,20 @@ function buildChatKitStatus() {
   };
 }
 
-function buildChatKitFailure(status, { code, message, statusCode = 502 }) {
+function buildChatKitWorkflow() {
+  const workflow = {
+    id: getChatKitEnvValue("OPENAI_CHATKIT_WORKFLOW_ID"),
+  };
+  const workflowVersion = getChatKitEnvValue("OPENAI_CHATKIT_WORKFLOW_VERSION");
+
+  if (workflowVersion) {
+    workflow.version = workflowVersion;
+  }
+
+  return workflow;
+}
+
+function buildChatKitFailure(status, { code, message, statusCode = 502, upstreamStatus = null, upstreamError = null, transportError = null }) {
   return {
     statusCode,
     body: {
@@ -156,6 +232,17 @@ function buildChatKitFailure(status, { code, message, statusCode = 502 }) {
       availability: "unavailable",
       checkedAt: new Date().toISOString(),
       reason: message,
+      upstream: upstreamStatus
+        ? {
+            status: upstreamStatus,
+            error: upstreamError,
+          }
+        : null,
+      transport: transportError
+        ? {
+            error: transportError,
+          }
+        : null,
       error: {
         code,
         message,
@@ -184,14 +271,12 @@ router.post("/session", async (req, res, next) => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        Authorization: buildOpenAiAuthHeader(),
         "OpenAI-Beta": "chatkit_beta=v1",
       },
       signal: controller.signal,
       body: JSON.stringify({
-        workflow: {
-          id: process.env.OPENAI_CHATKIT_WORKFLOW_ID,
-        },
+        workflow: buildChatKitWorkflow(),
         user: operatorUser,
       }),
     });
@@ -199,12 +284,16 @@ router.post("/session", async (req, res, next) => {
     clearTimeout(timeoutId);
 
     if (!response.ok || !cleanText(data?.client_secret)) {
+      const upstreamError = buildSafeUpstreamError(data);
       console.warn("[chatkit] hosted session request failed", {
         responseStatus: response.status,
+        upstreamError,
       });
       const failure = buildChatKitFailure(status, {
         code: "chatkit_session_failed",
         message: "ChatKit session creation is currently unavailable from the backend session route.",
+        upstreamStatus: response.status,
+        upstreamError,
       });
       return res.status(failure.statusCode).json(failure.body);
     }
@@ -217,9 +306,10 @@ router.post("/session", async (req, res, next) => {
   } catch (error) {
     clearTimeout(timeoutId);
     const isTimeout = error?.name === "AbortError";
+    const transportError = buildSafeTransportError(error);
     console.warn("[chatkit] hosted session request threw", {
-      errorName: error?.name || "UnknownError",
       timedOut: isTimeout,
+      transportError,
     });
     const failure = buildChatKitFailure(status, {
       code: isTimeout ? "chatkit_session_timeout" : "chatkit_session_failed",
@@ -227,6 +317,7 @@ router.post("/session", async (req, res, next) => {
         ? "ChatKit session creation timed out from the backend session route."
         : "ChatKit session creation is currently unavailable from the backend session route.",
       statusCode: isTimeout ? 504 : 502,
+      transportError,
     });
     return res.status(failure.statusCode).json(failure.body);
   }
@@ -250,6 +341,10 @@ router.post("/proof-of-life", (_req, res) => {
 
 router.__testables = {
   buildChatKitStatus,
+  buildChatKitWorkflow,
+  buildOpenAiAuthHeader,
+  buildSafeUpstreamError,
+  buildSafeTransportError,
   buildTemporaryChatKitUserId,
   buildChatKitFailure,
 };

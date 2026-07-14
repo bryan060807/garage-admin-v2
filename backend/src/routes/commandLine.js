@@ -12,6 +12,10 @@ function createRouter(service = commandLine) {
     });
   });
 
+  router.get("/capabilities", (_req, res) => {
+    res.json(service.getTerminalCapabilities());
+  });
+
   router.post("/run", async (req, res, next) => {
     try {
       const actionId = String(req.body?.actionId || "").trim();

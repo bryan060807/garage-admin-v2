@@ -179,7 +179,11 @@ function resultPayload(base) {
 async function verifyHttpUrl(url, timeoutMs, kind = "http") {
   const checkedAt = new Date().toISOString();
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
 
   try {
     const response = await fetch(url, {
@@ -196,11 +200,13 @@ async function verifyHttpUrl(url, timeoutMs, kind = "http") {
       status: response.status,
       url,
       checkedAt,
-      ...(response.ok ? {} : { error: `HTTP ${response.status}` }),
+      ...(response.ok ? {} : { code: "probe_failed", errorCode: "probe_failed", error: `HTTP ${response.status}` }),
     };
   } catch (error) {
     clearTimeout(timeout);
     const causeMessage = String(error?.cause?.message || "").trim();
+    const aborted = error.name === "AbortError";
+    const code = timedOut ? "probe_timeout" : aborted ? "probe_aborted" : "probe_failed";
 
     return {
       method: "http",
@@ -208,13 +214,41 @@ async function verifyHttpUrl(url, timeoutMs, kind = "http") {
       ok: false,
       url,
       checkedAt,
-      error: error.name === "AbortError" ? "Verification request timed out" : causeMessage || error.message,
+      code,
+      errorCode: code,
+      error: timedOut ? "Health probe timed out" : aborted ? "Health probe was aborted" : causeMessage || error.message,
     };
   }
 }
 
 async function verifyHttp(service, timeoutMs) {
   return verifyHttpUrl(service.healthUrl, timeoutMs, "health-url");
+}
+
+function failedHttpProbe(url, kind, error, checkedAt) {
+  const code = error?.name === "AbortError" ? "probe_aborted" : "probe_failed";
+
+  return {
+    method: "http",
+    kind,
+    ok: false,
+    url: url || null,
+    checkedAt,
+    code,
+    errorCode: code,
+    error: code === "probe_aborted" ? "Health probe was aborted" : "Health probe failed",
+  };
+}
+
+function failedTcpProbe(port, error, checkedAt) {
+  return {
+    method: "tcp",
+    ok: false,
+    host: "127.0.0.1",
+    port: Number.isFinite(Number(port)) ? Number(port) : null,
+    checkedAt,
+    error: error?.message || "Port check failed",
+  };
 }
 
 async function checkLocalPort(port, timeoutMs, host = "127.0.0.1") {
@@ -444,88 +478,121 @@ async function getPm2ProcessStatuses(processNames = []) {
   }
 }
 
-async function getWindowsRuntimeSnapshot(runtimeDefinitions = []) {
+async function getWindowsRuntimeSnapshot(runtimeDefinitions = [], options = {}) {
   const definitions = Array.isArray(runtimeDefinitions) ? runtimeDefinitions.filter(Boolean) : [];
   const checkedAt = new Date().toISOString();
   const timeoutMs = resolveVerificationTimeoutMs();
-  const pm2Snapshot = await getPm2ProcessStatuses(definitions.map((definition) => definition.processName));
-  const portSnapshot = await getListeningPortsSnapshot(definitions.map((definition) => definition.localPort));
+  const dependencies = {
+    getPm2ProcessStatuses,
+    getListeningPortsSnapshot,
+    getRecentPm2ErrorHints,
+    verifyHttpUrl,
+    checkLocalPort,
+    ...options.dependencies,
+  };
+  const pm2Snapshot = await dependencies.getPm2ProcessStatuses(definitions.map((definition) => definition.processName));
+  const portSnapshot = await dependencies.getListeningPortsSnapshot(definitions.map((definition) => definition.localPort));
 
   const services = {};
-  const checks = await Promise.allSettled(
-    definitions.map(async (definition) => {
-      const processKey = serviceKey(definition.processName || definition.serviceName);
-      const liveStatus = pm2Snapshot.statuses[processKey] || null;
-      const processInfo = pm2Snapshot.processes[processKey] || null;
-      const recentErrorHints = processInfo ? await getRecentPm2ErrorHints(processInfo) : [];
-      const portOwner = Number.isFinite(Number(definition.localPort)) ? portSnapshot.ports[Number(definition.localPort)] || null : null;
-      const checkUrl = definition.healthUrl || definition.localUrl || null;
-      const localHttp = checkUrl
-        ? await verifyHttpUrl(checkUrl, timeoutMs, definition.healthUrl ? "health-url" : "local-url")
-        : null;
-      const localPort = Number.isFinite(Number(definition.localPort))
-        ? await checkLocalPort(Number(definition.localPort), timeoutMs)
-        : null;
-      const pm2Health = liveStatus
-        ? classifyPm2Health(
-            {
-              pm2Status: liveStatus.pm2Status || liveStatus.status,
-              uptimeSeconds: liveStatus.uptimeSeconds,
-              restartCount: liveStatus.restarts,
-              pid: liveStatus.pid,
-              port: definition.localPort,
-              portOwnerPid: portOwner?.pid ?? null,
-              lastErrorHints: recentErrorHints,
-            },
-            {
-              minHealthyUptimeSeconds: config.pm2MinHealthyUptimeSeconds,
-              flappingRestartThreshold: config.pm2FlappingRestartThreshold,
-              highRestartThreshold: config.pm2HighRestartThreshold,
-            },
-            RECENT_PM2_OBSERVATIONS.get(processKey) || null,
-          )
-        : {
-            status: pm2Snapshot.ok ? "errored" : "unknown",
-            warnings: pm2Snapshot.ok ? ["PM2 process is missing from the current process list."] : [],
-            lastErrorHints: [],
-            restartCount: null,
-            uptimeSeconds: null,
-            pid: null,
-            pm2Status: pm2Snapshot.ok ? "missing" : "unknown",
-          };
+  async function buildServiceChecks(definition) {
+    const processKey = serviceKey(definition.processName || definition.serviceName);
+    const liveStatus = pm2Snapshot.statuses[processKey] || null;
+    const processInfo = pm2Snapshot.processes[processKey] || null;
+    const recentErrorHints = processInfo ? await dependencies.getRecentPm2ErrorHints(processInfo) : [];
+    const portOwner = Number.isFinite(Number(definition.localPort)) ? portSnapshot.ports[Number(definition.localPort)] || null : null;
+    const checkUrl = definition.healthUrl || definition.localUrl || null;
+    const checkKind = definition.healthUrl ? "health-url" : "local-url";
+    const [localHttpResult, localPortResult] = await Promise.allSettled([
+      checkUrl
+        ? dependencies.verifyHttpUrl(checkUrl, timeoutMs, checkKind)
+        : Promise.resolve(null),
+      Number.isFinite(Number(definition.localPort))
+        ? dependencies.checkLocalPort(Number(definition.localPort), timeoutMs)
+        : Promise.resolve(null),
+    ]);
+    const localHttp =
+      localHttpResult.status === "fulfilled" ? localHttpResult.value : failedHttpProbe(checkUrl, checkKind, localHttpResult.reason, checkedAt);
+    const localPort =
+      localPortResult.status === "fulfilled" ? localPortResult.value : failedTcpProbe(definition.localPort, localPortResult.reason, checkedAt);
+    const pm2Health = liveStatus
+      ? classifyPm2Health(
+          {
+            pm2Status: liveStatus.pm2Status || liveStatus.status,
+            uptimeSeconds: liveStatus.uptimeSeconds,
+            restartCount: liveStatus.restarts,
+            pid: liveStatus.pid,
+            port: definition.localPort,
+            portOwnerPid: portOwner?.pid ?? null,
+            lastErrorHints: recentErrorHints,
+          },
+          {
+            minHealthyUptimeSeconds: config.pm2MinHealthyUptimeSeconds,
+            flappingRestartThreshold: config.pm2FlappingRestartThreshold,
+            highRestartThreshold: config.pm2HighRestartThreshold,
+          },
+          RECENT_PM2_OBSERVATIONS.get(processKey) || null,
+        )
+      : {
+          status: pm2Snapshot.ok ? "errored" : "unknown",
+          warnings: pm2Snapshot.ok ? ["PM2 process is missing from the current process list."] : [],
+          lastErrorHints: [],
+          restartCount: null,
+          uptimeSeconds: null,
+          pid: null,
+          pm2Status: pm2Snapshot.ok ? "missing" : "unknown",
+        };
 
-      if (liveStatus) {
-        RECENT_PM2_OBSERVATIONS.set(processKey, {
-          restartCount: liveStatus.restarts,
-          checkedAt,
-        });
-      }
-
-      return {
-        key: serviceKey(definition.serviceName),
-        checks: {
-          localHttp,
-          localPort: localPort
-            ? {
-                ...localPort,
-                ownerPid: portOwner?.pid ?? null,
-                ownerMatchesPm2Pid:
-                  portOwner?.pid != null && pm2Health.pid != null ? portOwner.pid === pm2Health.pid : null,
-              }
-            : null,
-          pm2: pm2Health,
-        },
-      };
-    }),
-  );
-
-  for (const result of checks) {
-    if (result.status !== "fulfilled") {
-      continue;
+    if (liveStatus) {
+      RECENT_PM2_OBSERVATIONS.set(processKey, {
+        restartCount: liveStatus.restarts,
+        checkedAt,
+      });
     }
 
-    services[result.value.key] = result.value.checks;
+    return {
+      key: serviceKey(definition.serviceName),
+      checks: {
+        localHttp,
+        localPort: localPort
+          ? {
+              ...localPort,
+              ownerPid: portOwner?.pid ?? null,
+              ownerMatchesPm2Pid:
+                portOwner?.pid != null && pm2Health.pid != null ? portOwner.pid === pm2Health.pid : null,
+            }
+          : null,
+        pm2: pm2Health,
+      },
+    };
   }
+
+  const checks = await Promise.allSettled(
+    definitions.map((definition) => buildServiceChecks(definition)),
+  );
+
+  checks.forEach((result, index) => {
+    if (result.status === "fulfilled") {
+      services[result.value.key] = result.value.checks;
+      return;
+    }
+
+    const definition = definitions[index] || {};
+    const code = result.reason?.name === "AbortError" ? "probe_aborted" : "probe_failed";
+    services[serviceKey(definition.serviceName)] = {
+      localHttp: {
+        method: "http",
+        kind: definition.healthUrl ? "health-url" : "local-url",
+        ok: false,
+        url: definition.healthUrl || definition.localUrl || null,
+        checkedAt,
+        code,
+        errorCode: code,
+        error: code === "probe_aborted" ? "Health probe was aborted" : "Health probe failed",
+      },
+      localPort: null,
+      pm2: null,
+    };
+  });
 
   return {
     ok: pm2Snapshot.ok,

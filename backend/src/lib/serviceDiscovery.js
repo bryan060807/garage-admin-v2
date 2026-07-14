@@ -1,10 +1,15 @@
 const bridgeClient = require("./bridgeClient");
 const repository = require("./repository");
+const config = require("../config");
+const { classifyDatabaseError } = require("../db");
+const { redactText } = require("./outputRedaction");
 const windowsExecutor = require("./windowsExecutor");
 const windowsInventory = require("./windowsInventory");
 
 const PRIORITY_SERVICES = [
   "aibry-admin",
+  "aibry-website-api",
+  "aibry-website",
   "taskmaster-api",
   "taskmaster-app",
   "chordmaster-api",
@@ -14,6 +19,11 @@ const PRIORITY_SERVICES = [
   "trackmaster-api",
   "trackmaster-ui",
   "trackmaster-comparator",
+  "aibry-worker-agent",
+  "windows-aibry-admin",
+  "windows-node-agent",
+  "windows-admin-proxy",
+  "windows-garage-api",
 ];
 
 const BRIDGE_BASELINE_SERVICES = ["aibry-admin"];
@@ -81,6 +91,34 @@ const KNOWN_SERVICE_CLASSIFICATIONS = {
   "trackmaster-ui": {
     groupKey: "ui-apps",
     type: "UI",
+  },
+  "aibry-website-api": {
+    groupKey: "api",
+    type: "API",
+  },
+  "aibry-website": {
+    groupKey: "ui-apps",
+    type: "UI",
+  },
+  "aibry-worker-agent": {
+    groupKey: "admin",
+    type: "Worker Agent",
+  },
+  "windows-aibry-admin": {
+    groupKey: "admin",
+    type: "Admin Bridge",
+  },
+  "windows-node-agent": {
+    groupKey: "admin",
+    type: "Node Agent",
+  },
+  "windows-admin-proxy": {
+    groupKey: "admin",
+    type: "Admin Proxy",
+  },
+  "windows-garage-api": {
+    groupKey: "admin",
+    type: "Garage API",
   },
   "taskmaster-db": {
     groupKey: "infrastructure",
@@ -284,6 +322,36 @@ function compactObject(value) {
   });
 
   return entries.length > 0 ? Object.fromEntries(entries) : null;
+}
+
+function createCapability(input) {
+  if (!isObject(input)) {
+    return null;
+  }
+
+  return (
+    compactObject({
+      supported: typeof input.supported === "boolean" ? input.supported : null,
+      executor: pickString(input, ["executor"]) || null,
+      mode: pickString(input, ["mode"]) || null,
+      reason: pickString(input, ["reason", "message"]) || null,
+      setupHint: pickString(input, ["setupHint", "setup_hint"]) || null,
+    }) || null
+  );
+}
+
+function createCapabilities(input) {
+  if (!isObject(input)) {
+    return {};
+  }
+
+  return (
+    compactObject({
+      logs: createCapability(input.logs),
+      health: createCapability(input.health),
+      restart: createCapability(input.restart),
+    }) || {}
+  );
 }
 
 function normalizeStringArray(value) {
@@ -522,6 +590,7 @@ function createServiceRecord(input) {
     createDependencies(knownHints?.dependencies),
     dependencySignature,
   );
+  const capabilities = createCapabilities(input.capabilities);
 
   return {
     name,
@@ -536,7 +605,29 @@ function createServiceRecord(input) {
     health: compactObject(isObject(input.health) ? { ...input.health } : null) || {},
     provides,
     dependencies,
+    capabilityOverrides: capabilities,
     runtime,
+  };
+}
+
+function mergeCapabilityOverrides(existingValue, incomingValue, incomingSource) {
+  const existing = createCapabilities(existingValue);
+  const incoming = createCapabilities(incomingValue);
+
+  if (!Object.keys(incoming).length) {
+    return existing;
+  }
+
+  if (incomingSource === "bridge") {
+    return {
+      ...existing,
+      ...incoming,
+    };
+  }
+
+  return {
+    ...incoming,
+    ...existing,
   };
 }
 
@@ -626,6 +717,7 @@ function mergeService(recordsByName, service) {
   existing.health = mergeSupportingObject(existing.health, service.health);
   existing.provides = mergeHintCollections(existing.provides, service.provides, provideSignature);
   existing.dependencies = mergeHintCollections(existing.dependencies, service.dependencies, dependencySignature);
+  existing.capabilityOverrides = mergeCapabilityOverrides(existing.capabilityOverrides, service.capabilityOverrides, service.source);
 
   if (existing.host === "unknown" && service.host !== "unknown") {
     existing.host = service.host;
@@ -814,7 +906,7 @@ function inferServiceGroupKey(service, type) {
 function deriveServiceStatus(service, runtime, health) {
   const healthStatus = normalizeStatus(health?.status);
 
-  if (healthStatus === "degraded" || healthStatus === "errored") {
+  if (healthStatus === "degraded" || healthStatus === "errored" || healthStatus === "probe-failed") {
     return healthStatus;
   }
 
@@ -857,7 +949,7 @@ function deriveServiceSeverity(service, setupHints = []) {
     return "failed";
   }
 
-  if (/^(warning|degraded|partial|timeout|attention|restarting)$/.test(status)) {
+  if (/^(warning|degraded|partial|timeout|attention|restarting|probe-failed)$/.test(status)) {
     return "warning";
   }
 
@@ -1051,14 +1143,25 @@ function healthCapability(service) {
 function restartCapability(service) {
   const host = normalizeHost(service.host, service.name);
   const manager = getServiceManager(service);
+  const explicitRestart = createCapability(service.capabilityOverrides?.restart);
 
   if (host === "fedora") {
+    if (explicitRestart?.supported === true) {
+      return {
+        supported: true,
+        executor: explicitRestart.executor || "fedora-bridge",
+        mode: explicitRestart.mode || "service-restart",
+        reason: explicitRestart.reason || null,
+        setupHint: explicitRestart.setupHint || null,
+      };
+    }
+
     return {
-      supported: true,
-      executor: "fedora-bridge",
-      mode: "service-restart",
-      reason: null,
-      setupHint: null,
+      supported: false,
+      executor: null,
+      mode: "unsupported",
+      reason: explicitRestart?.reason || "Fedora restart is unavailable until the bridge reports restart.supported=true.",
+      setupHint: explicitRestart?.setupHint || "Bridge restart capability unavailable",
     };
   }
 
@@ -1108,6 +1211,7 @@ function serviceCapabilities(service) {
   const setupHints = uniqueHints([
     logs.setupHint,
     health.setupHint,
+    restart.setupHint,
     normalizeStatus(service.status) === "pending-env-or-not-started" ? "Pending environment or runtime start" : "",
   ]);
 
@@ -1127,6 +1231,7 @@ function finalizeService(service) {
     health: rawHealth,
     provides: rawProvides,
     dependencies: rawDependencies,
+    capabilityOverrides: rawCapabilityOverrides,
     runtime: rawRuntime,
     ...base
   } = service;
@@ -1136,6 +1241,7 @@ function finalizeService(service) {
   const health = compactObject(rawHealth);
   const provides = createProvides(rawProvides);
   const dependencies = createDependencies(rawDependencies);
+  const capabilityOverrides = createCapabilities(rawCapabilityOverrides);
   const initialRuntime = mergeRuntime(rawRuntime, null, base.status);
   const resolvedStatus = deriveServiceStatus(
     {
@@ -1152,6 +1258,7 @@ function finalizeService(service) {
     ...(inventory ? { inventory } : {}),
     ...(metadata ? { metadata } : {}),
     ...(health ? { health } : {}),
+    ...(Object.keys(capabilityOverrides).length > 0 ? { capabilityOverrides } : {}),
     runtime,
   });
   const classification = classifyService(
@@ -1184,6 +1291,7 @@ function finalizeService(service) {
     ...(health ? { health } : {}),
     ...(provides.length > 0 ? { provides } : {}),
     ...(dependencies.length > 0 ? { dependencies } : {}),
+    ...(Object.keys(capabilityOverrides).length > 0 ? { capabilityOverrides } : {}),
     runtime,
     restartCount: pickNumber(health, ["restartCount"], runtime.restarts),
     uptimeSeconds: pickNumber(health, ["uptimeSeconds"], runtime.uptimeSeconds),
@@ -1268,6 +1376,13 @@ function bridgeRecordFromObject(value, fallbackName, now) {
     inventory: isObject(value.inventory) ? value.inventory : null,
     metadata: isObject(value.metadata) ? value.metadata : null,
     health: isObject(value.health) ? value.health : null,
+    capabilities: isObject(value.capabilities)
+      ? value.capabilities
+      : isObject(value.restart)
+        ? { restart: value.restart }
+        : isObject(value.supports)
+          ? { restart: { supported: value.supports.restart === true } }
+          : null,
     runtime: isObject(value.runtime) ? value.runtime : null,
   });
 }
@@ -1402,9 +1517,29 @@ function deriveMemoryServices(serviceFacts, incidents) {
   return sortServices(Array.from(recordsByName.values()).map(finalizeService));
 }
 
+function createMemoryReadTimeoutError(label) {
+  const error = new Error(`${label} read timed out after ${config.memoryReadTimeoutMs}ms.`);
+  error.code = "memory_read_timeout";
+  return error;
+}
+
+function withMemoryReadTimeout(label, readPromise) {
+  let timeoutId;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => reject(createMemoryReadTimeoutError(label)), config.memoryReadTimeoutMs);
+  });
+
+  return Promise.race([readPromise, timeoutPromise]).finally(() => {
+    clearTimeout(timeoutId);
+  });
+}
+
 async function readMemoryServices() {
   try {
-    const [serviceFacts, incidents] = await Promise.all([repository.listServiceFacts(), repository.listIncidents()]);
+    const [serviceFacts, incidents] = await withMemoryReadTimeout(
+      "Service discovery memory",
+      Promise.all([repository.listServiceFacts(), repository.listIncidents()]),
+    );
 
     return {
       ok: true,
@@ -1412,10 +1547,17 @@ async function readMemoryServices() {
       error: null,
     };
   } catch (error) {
+    const safeError = classifyDatabaseError(error);
+    console.warn("[services] memory source unavailable", {
+      code: error?.code || safeError.code || error?.name || "memory_read_failed",
+      message: redactText(error?.message || "Memory read failed."),
+      degraded: true,
+    });
+
     return {
       ok: false,
       items: [],
-      error: error.message,
+      error: safeError.message,
     };
   }
 }
@@ -1547,16 +1689,41 @@ function resolveInventoryHealth(definition, windowsSnapshot) {
   const baseHealth = isObject(definition.health) ? { ...definition.health } : {};
   const liveChecks = windowsSnapshot?.services?.[serviceKey(definition.name)] || {};
   const pm2 = isObject(liveChecks.pm2) ? liveChecks.pm2 : null;
+  const localHttp = isObject(liveChecks.localHttp) ? liveChecks.localHttp : null;
+  const localPort = isObject(liveChecks.localPort) ? liveChecks.localPort : null;
+  const pm2Status = pickString(pm2, ["pm2Status"]);
+  const pm2HealthStatus = pickString(pm2, ["status"]);
+  const probeCode = pickString(localHttp, ["code", "errorCode"]);
+  const probeFailedWithRuntimeEvidence =
+    localHttp?.checkedAt &&
+    localHttp.ok === false &&
+    localPort?.checkedAt &&
+    localPort.ok === true &&
+    (pm2Status === "online" || pm2HealthStatus === "healthy");
+  const warnings = Array.isArray(pm2?.warnings) ? pm2.warnings : Array.isArray(baseHealth.warnings) ? baseHealth.warnings : [];
+  const probeWarning =
+    probeCode === "probe_timeout"
+      ? "HTTP health probe timed out, but PM2 is online and the local port is listening."
+      : probeCode === "probe_aborted"
+        ? "HTTP health probe was aborted, but PM2 is online and the local port is listening."
+        : "HTTP health probe failed, but PM2 is online and the local port is listening.";
   const checks = compactObject({
-    localHttp: isObject(liveChecks.localHttp) ? liveChecks.localHttp : null,
-    localPort: isObject(liveChecks.localPort) ? liveChecks.localPort : null,
+    localHttp,
+    localPort,
   });
 
   return (
     compactObject({
       ...baseHealth,
-      status: pickString(pm2, ["status"]) || baseHealth.status || null,
-      warnings: Array.isArray(pm2?.warnings) ? pm2.warnings : Array.isArray(baseHealth.warnings) ? baseHealth.warnings : null,
+      status: probeFailedWithRuntimeEvidence ? "degraded" : pm2HealthStatus || baseHealth.status || null,
+      warnings: probeFailedWithRuntimeEvidence
+        ? uniqueHints([
+            ...warnings,
+            probeWarning,
+          ])
+        : warnings.length > 0
+          ? warnings
+          : null,
       lastErrorHints:
         Array.isArray(pm2?.lastErrorHints)
           ? pm2.lastErrorHints
@@ -1566,7 +1733,7 @@ function resolveInventoryHealth(definition, windowsSnapshot) {
       restartCount: pickNumber(pm2, ["restartCount"], pickNumber(baseHealth, ["restartCount"], null)),
       uptimeSeconds: pickNumber(pm2, ["uptimeSeconds"], pickNumber(baseHealth, ["uptimeSeconds"], null)),
       pid: pickNumber(pm2, ["pid"], pickNumber(baseHealth, ["pid"], null)),
-      pm2Status: pickString(pm2, ["pm2Status"]) || baseHealth.pm2Status || null,
+      pm2Status: pm2Status || baseHealth.pm2Status || null,
       checks,
       checkedAt:
         liveChecks.localHttp?.checkedAt ||

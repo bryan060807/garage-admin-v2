@@ -1,3 +1,43 @@
+const config = require("../config");
+
+function localHttpUrl(port, path = "") {
+  const normalizedPath = path ? `/${String(path).replace(/^\/+/, "")}` : "";
+  return `http://127.0.0.1:${port}${normalizedPath}`;
+}
+
+function garageAdminRuntimeDefinition() {
+  const localPort = config.port;
+  const localUrl = localHttpUrl(localPort);
+  const healthUrl = localHttpUrl(localPort, "/health");
+
+  return {
+    id: "garage-admin-v2",
+    serviceName: "garage-admin-v2",
+    displayName: "Garage Admin V2",
+    host: "windows",
+    manager: "pm2",
+    processName: "garage-admin-v2",
+    serviceGroup: "ui-apps",
+    serviceType: "Operator Console",
+    localPort,
+    localUrl,
+    healthUrl,
+    provides: [
+      {
+        kind: "http",
+        endpoint: localUrl,
+        healthEndpoint: healthUrl,
+        notes: "Windows PM2 operator-console runtime.",
+      },
+    ],
+    restartSupported: true,
+    logsSupported: true,
+    notes: [
+      "Self-restart is approved through the guarded per-service PM2 restart workflow.",
+    ],
+  };
+}
+
 const WINDOWS_RUNTIME_INVENTORY = [
   {
     id: "taskmaster-api",
@@ -49,10 +89,10 @@ const WINDOWS_RUNTIME_INVENTORY = [
     localUrl: "http://127.0.0.1:3002",
     healthUrl: "http://127.0.0.1:3002/health",
     publicUrl: "https://api-chordmaster.aibry.shop",
-    restartSupported: false,
+    restartSupported: true,
     logsSupported: true,
     notes: [
-      "PM2 process name is confirmed, but restart remains read-only in the first pass.",
+      "PM2 process name is confirmed and restart is approved through the guarded per-service workflow.",
     ],
   },
   {
@@ -68,39 +108,14 @@ const WINDOWS_RUNTIME_INVENTORY = [
     localPort: 3200,
     localUrl: "http://127.0.0.1:3200",
     publicUrl: "https://chordmaster.aibry.shop",
-    restartSupported: false,
+    restartSupported: true,
     logsSupported: true,
     notes: [
       "Canonical service key stays chordmaster-app for logs and bridge compatibility.",
-      "Restart remains read-only in the first pass.",
+      "Restart is approved through the guarded per-service workflow.",
     ],
   },
-  {
-    id: "garage-admin-v2",
-    serviceName: "garage-admin-v2",
-    displayName: "Garage Admin V2",
-    host: "windows",
-    manager: "pm2",
-    processName: "garage-admin-v2",
-    serviceGroup: "ui-apps",
-    serviceType: "Operator Console",
-    localPort: 4010,
-    localUrl: "http://127.0.0.1:4010",
-    healthUrl: "http://127.0.0.1:4010/health",
-    provides: [
-      {
-        kind: "http",
-        endpoint: "http://127.0.0.1:4010",
-        healthEndpoint: "http://127.0.0.1:4010/health",
-        notes: "Windows PM2 operator-console runtime.",
-      },
-    ],
-    restartSupported: false,
-    logsSupported: true,
-    notes: [
-      "Self-restart is intentionally disabled to avoid operator lockout during first-pass inventory work.",
-    ],
-  },
+  garageAdminRuntimeDefinition(),
   {
     id: "aibry-masterclass-landing",
     serviceName: "aibry-masterclass-landing",
@@ -117,6 +132,25 @@ const WINDOWS_RUNTIME_INVENTORY = [
     logsSupported: true,
     notes: [
       "Fedora nginx proxies apps.aibry.shop to this Windows-hosted PM2 runtime.",
+    ],
+  },
+  {
+    id: "aibry-website",
+    serviceName: "aibry-website",
+    displayName: "AIBRY Website Frontend",
+    host: "windows",
+    manager: "pm2",
+    processName: "aibry-website",
+    serviceGroup: "ui-apps",
+    serviceType: "UI",
+    localPort: 3015,
+    localUrl: "http://127.0.0.1:3015",
+    healthUrl: "http://127.0.0.1:3015/",
+    publicUrl: "https://aibry.shop",
+    restartSupported: true,
+    logsSupported: true,
+    notes: [
+      "Windows PM2 owns the AIBRY Website frontend runtime; Fedora owns the Website API and front-door infrastructure.",
     ],
   },
   {
@@ -207,6 +241,97 @@ const WINDOWS_RUNTIME_INVENTORY = [
     logsSupported: true,
     notes: [
       "No dedicated health endpoint is modeled yet; local HTTP and port reachability are used.",
+    ],
+  },
+  {
+    id: "aibry-worker-agent",
+    serviceName: "aibry-worker-agent",
+    aliases: ["windows-runtime"],
+    displayName: "AIBRY Worker Agent",
+    host: "windows",
+    manager: "pm2",
+    processName: "aibry-worker-agent",
+    serviceGroup: "admin",
+    serviceType: "Worker Agent",
+    localPort: 4091,
+    localUrl: "http://127.0.0.1:4091",
+    healthUrl: "http://127.0.0.1:4091/health",
+    restartSupported: true,
+    logsSupported: true,
+    notes: [
+      "Loopback-only worker agent; restart is approved through the guarded PM2 workflow.",
+    ],
+  },
+  {
+    id: "windows-aibry-admin",
+    serviceName: "windows-aibry-admin",
+    displayName: "Windows AIBRY Admin Bridge",
+    host: "windows",
+    manager: "pm2",
+    processName: "windows-aibry-admin",
+    serviceGroup: "admin",
+    serviceType: "Admin Bridge",
+    localPort: 3105,
+    localUrl: "http://127.0.0.1:3105",
+    healthUrl: "http://127.0.0.1:3105/admin/health",
+    restartSupported: true,
+    logsSupported: true,
+    notes: [
+      "Windows-local admin bridge; restart is approved but can briefly interrupt direct Windows control-plane checks.",
+    ],
+  },
+  {
+    id: "windows-node-agent",
+    serviceName: "windows-node-agent",
+    displayName: "Windows Node Agent",
+    host: "windows",
+    manager: "pm2",
+    processName: "windows-node-agent",
+    serviceGroup: "admin",
+    serviceType: "Node Agent",
+    localPort: 3110,
+    localUrl: "http://127.0.0.1:3110",
+    healthUrl: "http://127.0.0.1:3110/agent/v1/health",
+    restartSupported: true,
+    logsSupported: true,
+    notes: [
+      "Windows-local node-agent executor; restart is approved for allowlist reloads and operator maintenance.",
+    ],
+  },
+  {
+    id: "windows-admin-proxy",
+    serviceName: "windows-admin-proxy",
+    displayName: "Windows Admin Proxy",
+    host: "windows",
+    manager: "pm2",
+    processName: "windows-admin-proxy",
+    serviceGroup: "admin",
+    serviceType: "Admin Proxy",
+    localPort: 4100,
+    localUrl: "http://127.0.0.1:4100",
+    healthUrl: "http://127.0.0.1:4100/admin/health",
+    restartSupported: true,
+    logsSupported: true,
+    notes: [
+      "Windows-local admin proxy; restart is approved through the guarded PM2 workflow.",
+    ],
+  },
+  {
+    id: "windows-garage-api",
+    serviceName: "windows-garage-api",
+    displayName: "Windows Garage API",
+    host: "windows",
+    manager: "pm2",
+    processName: "windows-garage-api",
+    serviceGroup: "admin",
+    serviceType: "Garage API",
+    localPort: 5100,
+    localUrl: "http://127.0.0.1:5100",
+    healthUrl: "http://127.0.0.1:5100/admin/health",
+    restartSupported: true,
+    logsSupported: true,
+    notes: [
+      "Windows helper API for operator/admin workflows; restart is approved through the guarded PM2 workflow.",
     ],
   },
 ];

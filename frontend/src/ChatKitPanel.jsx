@@ -120,19 +120,16 @@ function ChatKitSurface({ operatorId, selectedServiceLabel }) {
       greeting: "Assistant-only operator workspace",
       prompts: [
         {
-          name: "Summarize selected service",
+          label: "Summarize selected service",
           prompt: "Summarize the selected service using the current read-only operator context.",
-          icon: "search",
         },
         {
-          name: "Safest next step",
+          label: "Safest next step",
           prompt: "What is the safest next step using the current read-only operator context?",
-          icon: "sparkles",
         },
         {
-          name: "Review logs",
+          label: "Review logs",
           prompt: "What logs should I review before considering any approval-routed action?",
-          icon: "book-open",
         },
       ],
     },
@@ -196,6 +193,7 @@ export default function ChatKitPanel({ status = null, selectedServiceLabel = "" 
   const requirements = Array.isArray(status?.requirements) ? status.requirements : [];
   const intentionallyDisabled = Array.isArray(status?.intentionallyDisabled) ? status.intentionallyDisabled : [];
   const nextStep = cleanText(status?.nextStep);
+  const workflowVersionLabel = cleanText(status?.workflowVersionLabel || status?.session?.workflowVersionLabel) || "production";
   const panelSummary = useMemo(() => {
     if (isConfigured) {
       return "Hosted ChatKit session surface. Assistant-only, read-only.";
@@ -209,6 +207,7 @@ export default function ChatKitPanel({ status = null, selectedServiceLabel = "" 
       <div className="chatkit-panel-meta">
         <span className={`status-badge ${getModeBadgeClass(mode)}`}>{formatModeLabel(mode)}</span>
         <span className="status-badge status-info">{cleanText(status?.availability) || "unavailable"}</span>
+        <span className="status-badge status-info">Workflow: {workflowVersionLabel}</span>
         <span className="inline-note">Backend-only credentials. Assistant-only surface.</span>
       </div>
       <p className="inline-note">{panelSummary}</p>

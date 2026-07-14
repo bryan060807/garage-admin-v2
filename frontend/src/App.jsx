@@ -1,6 +1,7 @@
 ﻿import { Component, useEffect, useRef, useState } from "react";
-import ChatKitPanel from "./ChatKitPanel";
 import CommandLinePanel from "./CommandLinePanel";
+import ContactInboxPanel from "./ContactInboxPanel";
+import PatchProposalsPanel from "./PatchProposalsPanel";
 import {
   buildActionApprovalContext,
   buildActionApprovalContextFromReviewSnapshot,
@@ -10,64 +11,19 @@ import {
   selectActionReviewSnapshot,
 } from "./actionApproval";
 import { formatActionTypeLabel, getActionRiskProfile, shouldShowActionApprovalPreview } from "./actionRisk";
-import { buildAssistantContext, buildAssistantRequestPayload } from "./assistantContext";
-import { ASSISTANT_LOOKUP_CHIPS, buildAssistantLookupInvocation, createAssistantSelection } from "./assistantLookup";
-import {
-  ASSISTANT_TONE_HELPER_TEXT,
-  ASSISTANT_TONE_OPTIONS,
-  formatAssistantContextForTone,
-  formatAssistantMessageForTone,
-  formatAssistantPlanCardForTone,
-  formatAssistantText,
-  getAssistantToneMeta,
-  loadAssistantTone,
-  normalizeAssistantTone,
-  saveAssistantTone,
-} from "./assistantPersonality.js";
-import { ASSISTANT_PLAN_CHIPS, buildAssistantPlanCards } from "./assistantPlans";
 import { buildDependencyHealthRollup, describeInventoryFreshness } from "./dependencyHealth";
 import { extractServiceDiagnosis } from "./diagnostics";
 
 const RIGHT_PANEL_SPLIT_STORAGE_KEY = "garage-admin-v2:right-panel-split";
 const LAYOUT_CUSTOMIZATION_VERSION = 1;
 const LAYOUT_CUSTOMIZATION_STORAGE_KEY = `garage-admin-v2:experimental-layout:v${LAYOUT_CUSTOMIZATION_VERSION}`;
-const ASSISTANT_MODE_STORAGE_KEY = "garage-admin-v2:assistant-mode";
-const ASSISTANT_LAUNCHER_POSITION_STORAGE_KEY = "garage-admin-v2:assistant-launcher-position";
-const ASSISTANT_MODES = Object.freeze({
-  MINIMIZED: "minimized",
-  DOCKED: "docked",
-  EXPANDED: "expanded",
-});
-const ASSISTANT_LAUNCHER_POSITIONS = Object.freeze({
-  BOTTOM_RIGHT: "bottom-right",
-  RIGHT_CENTER: "right-center",
-  BOTTOM_CENTER: "bottom-center",
-});
-const ASSISTANT_LAUNCHER_POSITION_ORDER = [
-  ASSISTANT_LAUNCHER_POSITIONS.RIGHT_CENTER,
-  ASSISTANT_LAUNCHER_POSITIONS.BOTTOM_RIGHT,
-  ASSISTANT_LAUNCHER_POSITIONS.BOTTOM_CENTER,
-];
-const ASSISTANT_LAUNCHER_POSITION_META = {
-  [ASSISTANT_LAUNCHER_POSITIONS.BOTTOM_RIGHT]: {
-    label: "Bottom right",
-    shortLabel: "BR",
-  },
-  [ASSISTANT_LAUNCHER_POSITIONS.RIGHT_CENTER]: {
-    label: "Right center",
-    shortLabel: "RC",
-  },
-  [ASSISTANT_LAUNCHER_POSITIONS.BOTTOM_CENTER]: {
-    label: "Bottom center",
-    shortLabel: "BC",
-  },
-};
 const WORKSPACE_TABS = Object.freeze([
   { id: "overview", label: "Overview" },
   { id: "actions", label: "Actions" },
   { id: "workers", label: "Workers" },
   { id: "command-line", label: "Command Line" },
-  { id: "assistant", label: "Assistant" },
+  { id: "contact-inbox", label: "Contact Inbox" },
+  { id: "patch-proposals", label: "Patch Proposals" },
   { id: "evidence", label: "Logs / Evidence" },
 ]);
 
@@ -239,156 +195,6 @@ function removeSavedLayoutPreferences() {
   } catch (_error) {
     // A reset should still update the in-memory layout if storage is blocked.
   }
-}
-
-function normalizeAssistantMode(value) {
-  if (Object.values(ASSISTANT_MODES).includes(value)) {
-    return value;
-  }
-
-  return ASSISTANT_MODES.MINIMIZED;
-}
-
-function loadAssistantMode() {
-  try {
-    if (typeof window === "undefined") {
-      return ASSISTANT_MODES.MINIMIZED;
-    }
-
-    return normalizeAssistantMode(window.localStorage.getItem(ASSISTANT_MODE_STORAGE_KEY));
-  } catch (_error) {
-    return ASSISTANT_MODES.MINIMIZED;
-  }
-}
-
-function saveAssistantMode(mode) {
-  try {
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(ASSISTANT_MODE_STORAGE_KEY, normalizeAssistantMode(mode));
-    }
-  } catch (_error) {
-    // localStorage can be unavailable in locked-down browser contexts.
-  }
-}
-
-function normalizeAssistantLauncherPosition(value) {
-  if (ASSISTANT_LAUNCHER_POSITION_ORDER.includes(value)) {
-    return value;
-  }
-
-  return ASSISTANT_LAUNCHER_POSITIONS.RIGHT_CENTER;
-}
-
-function loadAssistantLauncherPosition() {
-  try {
-    if (typeof window === "undefined") {
-      return ASSISTANT_LAUNCHER_POSITIONS.RIGHT_CENTER;
-    }
-
-    return normalizeAssistantLauncherPosition(window.localStorage.getItem(ASSISTANT_LAUNCHER_POSITION_STORAGE_KEY));
-  } catch (_error) {
-    return ASSISTANT_LAUNCHER_POSITIONS.RIGHT_CENTER;
-  }
-}
-
-function saveAssistantLauncherPosition(position) {
-  try {
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(
-        ASSISTANT_LAUNCHER_POSITION_STORAGE_KEY,
-        normalizeAssistantLauncherPosition(position),
-      );
-    }
-  } catch (_error) {
-    // localStorage can be unavailable in locked-down browser contexts.
-  }
-}
-
-function getNextAssistantLauncherPosition(position) {
-  const normalized = normalizeAssistantLauncherPosition(position);
-  const index = ASSISTANT_LAUNCHER_POSITION_ORDER.indexOf(normalized);
-  return ASSISTANT_LAUNCHER_POSITION_ORDER[(index + 1) % ASSISTANT_LAUNCHER_POSITION_ORDER.length];
-}
-
-function formatAssistantHostOwnership(host) {
-  const normalized = String(host || "").trim().toLowerCase();
-
-  if (normalized === "fedora") {
-    return "Fedora control-plane";
-  }
-
-  if (normalized === "windows") {
-    return "Windows runtime/operator";
-  }
-
-  if (normalized === "cross-host" || normalized === "docs") {
-    return "Cross-host docs";
-  }
-
-  return "";
-}
-
-function getChatKitModeBadgeClass(mode) {
-  if (mode === "configured") {
-    return "status-completed";
-  }
-
-  if (mode === "error") {
-    return "status-failed";
-  }
-
-  if (mode === "prep") {
-    return "status-warning";
-  }
-
-  return "status-unknown";
-}
-
-function formatChatKitModeLabel(mode) {
-  if (mode === "configured") {
-    return "Configured";
-  }
-
-  if (mode === "disabled") {
-    return "Disabled";
-  }
-
-  if (mode === "error") {
-    return "Error";
-  }
-
-  return "Prep";
-}
-
-function buildAssistantAttentionState({
-  hasSelectedService = false,
-  unreadCount = 0,
-  diagnosisDetected = false,
-  needsAttention = false,
-} = {}) {
-  const labels = [];
-
-  if (hasSelectedService) {
-    labels.push("Context");
-  }
-
-  if (unreadCount > 0) {
-    labels.push(unreadCount === 1 ? "1 unread" : `${unreadCount} unread`);
-  }
-
-  if (diagnosisDetected) {
-    labels.push("Diagnosis");
-  }
-
-  if (needsAttention) {
-    labels.push("Attention");
-  }
-
-  return {
-    count: labels.length,
-    labels,
-    summary: labels.length ? labels.join(" Â· ") : "Ready when needed",
-  };
 }
 
 function moveCardInOrder(order, cardId, direction) {
@@ -675,362 +481,6 @@ function formatDurationSeconds(value) {
   }
 
   return `${rounded}s`;
-}
-
-function lookupText(value) {
-  return String(value || "").trim();
-}
-
-function getLookupSafetyLabel(item) {
-  const status = lookupText(item?.safetyStatus).toLowerCase();
-
-  if (status === "blocked") {
-    return "Blocked";
-  }
-
-  if (status === "warning") {
-    return "Guarded";
-  }
-
-  return "Safe";
-}
-
-function formatLookupKindLabel(value) {
-  return lookupText(value)
-    .split(/[_-]+/)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
-}
-
-function getLookupSafetyBadgeClass(item) {
-  const status = lookupText(item?.safetyStatus).toLowerCase();
-
-  if (status === "blocked") {
-    return "status-failed";
-  }
-
-  if (status === "warning") {
-    return "status-warning";
-  }
-
-  return "status-completed";
-}
-
-function getLookupPreviewText(item) {
-  const preview = lookupText(item?.preview);
-
-  if (preview) {
-    return preview;
-  }
-
-  return lookupText(item?.snippet);
-}
-
-function formatLookupMeta(item) {
-  const parts = [];
-
-  if (item?.sourceLabel) {
-    parts.push(item.sourceLabel);
-  }
-
-  if (item?.rootLabel) {
-    parts.push(`Root ${item.rootLabel}`);
-  }
-
-  if (item?.serviceName) {
-    parts.push(`Service ${item.serviceName}`);
-  }
-
-  if (item?.matchType) {
-    parts.push(`Match ${item.matchType}`);
-  }
-
-  if (item?.matchedLineCount != null && Number.isFinite(Number(item.matchedLineCount))) {
-    parts.push(`${Number(item.matchedLineCount)} matched`);
-  }
-
-  if (item?.updatedDate) {
-    parts.push(`Updated ${item.updatedDate}`);
-  }
-
-  if (item?.modifiedTime) {
-    parts.push(formatCreatedAt(item.modifiedTime));
-  }
-
-  if (item?.size != null) {
-    parts.push(formatBytes(item.size));
-  }
-
-  return parts.join(" Â· ");
-}
-
-function isLookupItemSelected(item, selection) {
-  if (!item || !selection) {
-    return false;
-  }
-
-  if (selection.reportId && item.reportId) {
-    return selection.reportId === item.reportId;
-  }
-
-  if (selection.path && item.path) {
-    return selection.path === item.path;
-  }
-
-  if (selection.serviceName && item.serviceName) {
-    return selection.serviceName === item.serviceName;
-  }
-
-  return false;
-}
-
-function canPreviewLookupItem(item) {
-  const kind = lookupText(item?.kind).toLowerCase();
-
-  if (kind === "report" || kind === "file") {
-    return Boolean(item?.reportId || item?.path);
-  }
-
-  return false;
-}
-
-function canExplainLookupItem(item) {
-  return Boolean(item?.reportId);
-}
-
-function AssistantLookupResults({ lookup, selection, onSelectItem, onPreviewItem, onExplainItem }) {
-  const items = normalizeObjectCollection(lookup?.items);
-
-  if (!items.length) {
-    return null;
-  }
-
-  return (
-    <div className="assistant-lookup-results">
-      {items.map((item) => {
-        const selected = isLookupItemSelected(item, selection);
-        const previewText = getLookupPreviewText(item);
-        const showPreviewAsBlock = lookupText(item?.kind).toLowerCase() === "log-preview" || lookupText(item?.kind).toLowerCase() === "file-preview";
-        const meta = formatLookupMeta(item);
-        const safetyLabel = getLookupSafetyLabel(item);
-        const canSelect = Boolean(item?.reportId || item?.path || item?.serviceName);
-
-        return (
-          <article
-            key={item.id || `${item.kind || "lookup"}-${item.title || item.relativePath || item.serviceName || "item"}`}
-            className={`assistant-lookup-card ${selected ? "assistant-lookup-card-selected" : ""} assistant-lookup-card-${
-              item.safetyStatus || "safe"
-            }`}
-          >
-            <div className="assistant-lookup-header">
-              <div className="assistant-lookup-heading">
-                <span className="detail-label">{formatLookupKindLabel(item.kind || "lookup")}</span>
-                <strong title={item.title || item.relativePath || item.serviceName}>
-                  {item.title || item.relativePath || item.serviceName || "Lookup result"}
-                </strong>
-              </div>
-              <div className="inline-badges assistant-lookup-badges">
-                <span className={`status-badge ${getLookupSafetyBadgeClass(item)}`}>{safetyLabel}</span>
-                {item.hostLabel ? <span className="status-badge status-info">{item.hostLabel}</span> : null}
-              </div>
-            </div>
-
-            {item.relativePath || item.path ? (
-              <div className="assistant-lookup-path" title={item.path || item.relativePath}>
-                {item.relativePath || item.path}
-              </div>
-            ) : null}
-
-            {meta ? <div className="assistant-lookup-meta">{meta}</div> : null}
-            {item.blockedReason ? <div className="known-failure assistant-lookup-blocked">{item.blockedReason}</div> : null}
-
-            {previewText ? (
-              showPreviewAsBlock ? (
-                <pre className="assistant-lookup-preview" tabIndex={0}>
-                  {previewText}
-                </pre>
-              ) : (
-                <div className="assistant-lookup-snippet">{previewText}</div>
-              )
-            ) : null}
-
-            {item.truncated ? (
-              <div className="inline-note assistant-lookup-truncated">
-                {item.personalityTruncatedNote || "Preview truncated by the safety cap."}
-              </div>
-            ) : null}
-
-            <div className="assistant-lookup-actions">
-              {canSelect ? (
-                <button type="button" className="mini-button" onClick={() => onSelectItem(item)}>
-                  {selected ? "Selected" : "Select"}
-                </button>
-              ) : null}
-              {canPreviewLookupItem(item) ? (
-                <button type="button" className="mini-button" onClick={() => onPreviewItem(item)}>
-                  Preview
-                </button>
-              ) : null}
-              {canExplainLookupItem(item) ? (
-                <button type="button" className="mini-button" onClick={() => onExplainItem(item)}>
-                  Explain
-                </button>
-              ) : null}
-            </div>
-          </article>
-        );
-      })}
-    </div>
-  );
-}
-
-function assistantPlanStatusClass(status) {
-  if (!status) {
-    return "status-badge status-risk-unknown";
-  }
-
-  if (status.appearance === "freshness") {
-    return `signal-freshness-badge signal-freshness-badge-${status.tone || "unknown"}`;
-  }
-
-  return `status-badge status-risk-${status.tone || "unknown"}`;
-}
-
-function assistantPlanEvidenceSafetyClass(label) {
-  const normalized = lookupText(label).toLowerCase();
-
-  if (normalized === "blocked") {
-    return "status-badge status-failed";
-  }
-
-  if (normalized === "guarded") {
-    return "status-badge status-warning";
-  }
-
-  return "status-badge status-completed";
-}
-
-function AssistantPlanCards({ cards, onRunAction }) {
-  const items = normalizeObjectCollection(cards);
-
-  if (!items.length) {
-    return null;
-  }
-
-  return (
-    <div className="assistant-plan-list">
-      {items.map((card) => (
-        <article
-          key={card.id || `${card.planType || "plan"}-${card.targetService?.id || "none"}`}
-          className={`assistant-plan-card assistant-plan-card-${card.risk?.level || "unknown"}`}
-        >
-          <div className="assistant-plan-header">
-            <div className="assistant-plan-heading">
-              <span className="detail-label">{card.planType || "Operator plan"}</span>
-              <strong>{card.title || "Operator plan"}</strong>
-              {card.targetService?.name ? (
-                <div className="assistant-plan-target">Target: {card.targetService.name}</div>
-              ) : null}
-            </div>
-            <div className="inline-badges assistant-plan-badges">
-              <span className="status-badge status-info">{card.hostOwnership?.label || "Unknown"}</span>
-              <span
-                className={`status-badge status-risk-${card.risk?.level || "unknown"}`}
-                title={card.risk?.detail || "Risk level"}
-              >
-                {card.risk?.label || "Unknown"}
-              </span>
-              {card.freshnessGateStatus?.label ? (
-                <span
-                  className={assistantPlanStatusClass(card.freshnessGateStatus)}
-                  title={card.freshnessGateStatus.detail || card.freshnessGateStatus.label}
-                >
-                  {card.freshnessGateStatus.label}
-                </span>
-              ) : null}
-            </div>
-          </div>
-
-          <div className="assistant-plan-summary">{card.currentEvidenceSummary}</div>
-
-          {Array.isArray(card.readOnlySteps) && card.readOnlySteps.length ? (
-            <div className="assistant-plan-section">
-              <span className="detail-label">Read-only first steps</span>
-              <ol className="assistant-plan-step-list">
-                {card.readOnlySteps.map((step) => (
-                  <li key={step}>{step}</li>
-                ))}
-              </ol>
-            </div>
-          ) : null}
-
-          {Array.isArray(card.approvalSteps) && card.approvalSteps.length ? (
-            <div className="assistant-plan-section">
-              <span className="detail-label">Approval-required steps</span>
-              <ol className="assistant-plan-step-list assistant-plan-step-list-approval">
-                {card.approvalSteps.map((step) => (
-                  <li key={step}>{step}</li>
-                ))}
-              </ol>
-            </div>
-          ) : null}
-
-          <div className="assistant-plan-meta">
-            {card.expectedImpact ? (
-              <div className="assistant-plan-note">
-                <strong>Expected impact:</strong> {card.expectedImpact}
-              </div>
-            ) : null}
-            {card.rollbackNote ? (
-              <div className="assistant-plan-note">
-                <strong>Rollback:</strong> {card.rollbackNote}
-              </div>
-            ) : null}
-            {card.blockedNote ? (
-              <div className="assistant-plan-note assistant-plan-note-warning">
-                <strong>Blocked from chat:</strong> {card.blockedNote}
-              </div>
-            ) : null}
-          </div>
-
-          {Array.isArray(card.supportingEvidence) && card.supportingEvidence.length ? (
-            <div className="assistant-plan-section">
-              <span className="detail-label">Supporting evidence</span>
-              <div className="assistant-plan-evidence-list">
-                {card.supportingEvidence.map((evidence) => (
-                  <div key={evidence.key || `${evidence.kind}-${evidence.title}`} className="assistant-plan-evidence-item">
-                    <div className="assistant-plan-evidence-header">
-                      <strong>{evidence.title || evidence.kind || "Evidence"}</strong>
-                      <div className="inline-badges assistant-plan-evidence-badges">
-                        {evidence.kind ? <span className="status-badge status-info">{evidence.kind}</span> : null}
-                        {evidence.safetyLabel ? (
-                          <span className={assistantPlanEvidenceSafetyClass(evidence.safetyLabel)}>{evidence.safetyLabel}</span>
-                        ) : null}
-                      </div>
-                    </div>
-                    <div className="assistant-plan-evidence-summary">{evidence.summary}</div>
-                    <div className="assistant-plan-evidence-meta">
-                      {[evidence.hostOwnership?.label, evidence.sourceLabel].filter(Boolean).join(" | ")}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          {card.nextRecommendedAction?.label ? (
-            <div className="assistant-plan-footer">
-              <span className="detail-label">Next UI action</span>
-              <button type="button" className="mini-button" onClick={(event) => onRunAction(card.nextRecommendedAction, event)}>
-                {card.nextRecommendedAction.label}
-              </button>
-            </div>
-          ) : null}
-        </article>
-      ))}
-    </div>
-  );
 }
 
 function splitLogLine(line) {
@@ -1490,6 +940,41 @@ function readServiceString(...values) {
   }
 
   return "";
+}
+
+function readApiErrorMessage(data, fallback = "Request failed.") {
+  return readServiceString(data?.error?.message, data?.message, data?.error, fallback);
+}
+
+async function fetchJsonEndpoint(endpoint, options = {}) {
+  const response = await fetch(endpoint);
+  const payload = await response.json().catch(() => ({}));
+  const data = toPlainObject(payload);
+  const requiresOkFlag = options.requireOkFlag === true;
+
+  if (!response.ok || (requiresOkFlag && data.ok === false)) {
+    const status = `${response.status}${response.statusText ? ` ${response.statusText}` : ""}`.trim();
+    const message = readApiErrorMessage(data, response.statusText || "Request failed.");
+    throw new Error(`${endpoint} returned ${status || "a failed response"}: ${message}`);
+  }
+
+  return data;
+}
+
+function describeMemoryDegradation(endpoint, data) {
+  if (!data?.degraded && data?.ok !== false) {
+    return "";
+  }
+
+  return `${endpoint}: ${readApiErrorMessage(data, "memory source degraded")}`;
+}
+
+function describeSettledFailure(endpoint, result) {
+  if (result.status === "fulfilled") {
+    return describeMemoryDegradation(endpoint, result.value);
+  }
+
+  return `${endpoint}: ${result.reason?.message || "request failed"}`;
 }
 
 function readServiceNumber(...values) {
@@ -2061,6 +1546,18 @@ function actionExecutionDetail(actionType, capability) {
     if (capability.mode === "status-only") {
       return "Status-only fallback";
     }
+  }
+
+  if (actionType === "restart-service") {
+    if (capability.executor === "fedora-bridge") {
+      return "Fedora bridge restart";
+    }
+
+    if (capability.executor === "windows-local" || capability.mode === "pm2-restart") {
+      return "Windows PM2 restart";
+    }
+
+    return "Approval-gated restart";
   }
 
   return "Run now";
@@ -2907,6 +2404,7 @@ function normalizeWorkerCapabilityEntry(entry, keyHint = "") {
     key: `${label.toLowerCase()}-${detail.toLowerCase()}`,
     label,
     detail,
+    metadata: isPlainObject(item.metadata) ? item.metadata : null,
     supported: item.supported !== false && item.available !== false && item.enabled !== false && item.ok !== false,
   };
 }
@@ -2919,12 +2417,12 @@ function isHiddenWorkerCapabilityEntry(entry) {
 
 function extractWorkerCapabilityEntries(payload) {
   const candidates = [
-    payload,
     payload?.capabilities,
     payload?.items,
     payload?.data,
     payload?.supportedTasks,
     payload?.tasks,
+    payload,
   ];
 
   for (const candidate of candidates) {
@@ -3031,6 +2529,40 @@ function supportsSafePm2Task(entries) {
 
 function supportsWorkerTask(entries, taskPattern) {
   return Array.isArray(entries) && entries.some((entry) => taskPattern.test(`${entry.key || ""} ${entry.label || ""} ${entry.detail || ""}`));
+}
+
+function getSystemdCapabilityContract(entries) {
+  const systemdEntry = Array.isArray(entries)
+    ? entries.find((entry) => supportsWorkerTask([entry], /\bsystemd[_-\s]?status\b/i))
+    : null;
+  const contract = toPlainObject(systemdEntry?.metadata?.contract);
+  const allowedServices = Array.isArray(contract.allowedServices) ? contract.allowedServices : [];
+  const serviceGroups = Array.isArray(contract.serviceGroups) ? contract.serviceGroups : [];
+  const allowedPatterns = Array.isArray(contract.allowedPatterns) ? contract.allowedPatterns : [];
+
+  if (!systemdEntry || (!allowedServices.length && !serviceGroups.length && !allowedPatterns.length)) {
+    return null;
+  }
+
+  return {
+    allowedServices,
+    serviceGroups,
+    allowedPatterns,
+  };
+}
+
+function formatAllowedServiceName(service) {
+  if (typeof service === "string") {
+    return service;
+  }
+
+  const item = toPlainObject(service);
+  const name = readServiceString(item.name, item.service, item.id);
+  const scope = readServiceString(item.scope);
+  const group = readServiceString(item.group);
+  const meta = [scope, group].filter(Boolean).join(" / ");
+
+  return meta ? `${name} (${meta})` : name;
 }
 
 function getRepoEvidenceFreshness(checkedAt, now = Date.now()) {
@@ -4209,6 +3741,7 @@ const AUDIT_FRESH_WINDOW_MS = 15 * 60 * 1000;
 
 const STATUS_LABELS = {
   ok: "OK",
+  "probe-failed": "Probe failed",
   supported: "Available",
   unsupported: "Unavailable",
   "pending-env-or-not-started": "Needs setup",
@@ -4255,6 +3788,10 @@ function statusClassName(value) {
 
   if (normalized === "errored") {
     return "status-error";
+  }
+
+  if (normalized === "probe-failed") {
+    return "status-degraded";
   }
 
   return `status-${normalized}`;
@@ -4451,6 +3988,7 @@ function WorkerEvidencePanel() {
     ? selectedWorkerEvidence.capabilities.entries
     : [];
   const selectedWorkerCapabilitySummary = summarizeWorkerCapabilities(selectedWorkerCapabilities);
+  const selectedWorkerSystemdContract = getSystemdCapabilityContract(selectedWorkerCapabilities);
   const selectedWorkerHasPm2Task = supportsSafePm2Task(selectedWorkerCapabilities);
   const selectedWorkerHasSystemPulseTask = selectedWorkerIsFedoraInfra || supportsWorkerTask(selectedWorkerCapabilities, /system[_-\s]?pulse/i);
   const selectedWorkerHasTemplatesTask = selectedWorkerIsFedoraBootstrap || supportsWorkerTask(selectedWorkerCapabilities, /\btemplates?\b/i);
@@ -4828,7 +4366,7 @@ function WorkerEvidencePanel() {
       selectedWorker,
       "ping_url",
       {
-        url: "http://127.0.0.1:4010/health",
+        url: "http://127.0.0.1:3010/health",
         targetService: "garage-admin-v2",
       },
       {
@@ -5094,7 +4632,7 @@ function WorkerEvidencePanel() {
                   disabled={!selectedWorker || Boolean(loadingAction)}
                 >
                   <span className="detail-label">Check Garage Admin health via worker</span>
-                  <span className="worker-job-card-copy">ping_url to http://127.0.0.1:4010/health</span>
+                  <span className="worker-job-card-copy">ping_url to http://127.0.0.1:3010/health</span>
                   <span className={`status-badge ${loadingAction === "ping_url" ? "status-executing" : "status-info"}`}>read-only</span>
                 </button>
 
@@ -5345,6 +4883,37 @@ function WorkerEvidencePanel() {
                     <span className="empty-state">No capability entries were reported.</span>
                   )}
                 </div>
+                {selectedWorkerSystemdContract ? (
+                  <div className="worker-evidence-record-grid">
+                    <div className="detail-item">
+                      <span className="detail-label">Systemd allowed services</span>
+                      <span className="detail-value">
+                        {selectedWorkerSystemdContract.allowedServices.length
+                          ? selectedWorkerSystemdContract.allowedServices.map(formatAllowedServiceName).filter(Boolean).join(", ")
+                          : "None advertised"}
+                      </span>
+                    </div>
+                    <div className="detail-item">
+                      <span className="detail-label">Systemd service groups</span>
+                      <span className="detail-value">
+                        {selectedWorkerSystemdContract.serviceGroups.length
+                          ? selectedWorkerSystemdContract.serviceGroups
+                              .map((group) => readServiceString(group?.group, group?.name, group?.id))
+                              .filter(Boolean)
+                              .join(", ")
+                          : "None advertised"}
+                      </span>
+                    </div>
+                    <div className="detail-item">
+                      <span className="detail-label">Systemd allowed patterns</span>
+                      <span className="detail-value">
+                        {selectedWorkerSystemdContract.allowedPatterns.length
+                          ? selectedWorkerSystemdContract.allowedPatterns.join(", ")
+                          : "None advertised"}
+                      </span>
+                    </div>
+                  </div>
+                ) : null}
                 <p className="worker-evidence-record-copy">{selectedWorkerEvidence.capabilities.summary}</p>
                 {selectedWorkerEvidence.capabilities.error ? (
                   <p className="worker-evidence-record-error">
@@ -5434,6 +5003,7 @@ export default function App() {
   const [healthDisposition, setHealthDisposition] = useState(null);
   const [initialLoading, setInitialLoading] = useState(true);
   const [initialError, setInitialError] = useState(null);
+  const [memoryLoadWarning, setMemoryLoadWarning] = useState(null);
   const [logsLoading, setLogsLoading] = useState(false);
   const [logsError, setLogsError] = useState(null);
   const [showRestartForm, setShowRestartForm] = useState(false);
@@ -5453,22 +5023,7 @@ export default function App() {
   const [auditError, setAuditError] = useState(null);
   const [auditFilterMode, setAuditFilterMode] = useState("service");
   const [expandedAuditIds, setExpandedAuditIds] = useState([]);
-  const [chatLoading, setChatLoading] = useState(false);
-  const [chatError, setChatError] = useState(null);
-  const [messages, setMessages] = useState([]);
-  const [chatkitStatus, setChatkitStatus] = useState(null);
-  const [chatkitLoading, setChatkitLoading] = useState(false);
-  const [chatkitResult, setChatkitResult] = useState(null);
-  const [chatkitError, setChatkitError] = useState(null);
-  const [assistantSelection, setAssistantSelection] = useState(null);
-  const [activeAssistantPlanChipId, setActiveAssistantPlanChipId] = useState("");
-  const [input, setInput] = useState("");
-  const [assistantMode, setAssistantMode] = useState(loadAssistantMode);
-  const [assistantTone, setAssistantTone] = useState(loadAssistantTone);
-  const [assistantLauncherPosition, setAssistantLauncherPosition] = useState(loadAssistantLauncherPosition);
-  const [assistantSeenResponseCount, setAssistantSeenResponseCount] = useState(0);
   const opsGridRef = useRef(null);
-  const chatRequestIdRef = useRef(0);
   const skipNextLayoutPersistenceRef = useRef(false);
   const [rightLayout, setRightLayout] = useState(loadInitialRightLayout);
   const [rightPanelResizing, setRightPanelResizing] = useState(false);
@@ -5515,43 +5070,6 @@ export default function App() {
 
     return () => document.body.classList.remove("is-resizing-right-stack");
   }, [rightPanelResizing]);
-
-  useEffect(() => {
-    saveAssistantMode(assistantMode);
-  }, [assistantMode]);
-
-  useEffect(() => {
-    saveAssistantTone(assistantTone);
-  }, [assistantTone]);
-
-  useEffect(() => {
-    saveAssistantLauncherPosition(assistantLauncherPosition);
-  }, [assistantLauncherPosition]);
-
-  useEffect(() => {
-    if (assistantMode !== ASSISTANT_MODES.EXPANDED) {
-      return undefined;
-    }
-
-    const handleKeyDown = (event) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setAssistantMode(ASSISTANT_MODES.MINIMIZED);
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [assistantMode]);
-
-  useEffect(() => {
-    if (activeWorkspaceTab !== "assistant" || chatkitLoading || chatkitStatus) {
-      return;
-    }
-
-    runChatKitProbe("status").catch(() => {});
-  }, [activeWorkspaceTab, chatkitLoading, chatkitStatus]);
 
   function setRightPanelSplitFromClientY(clientY) {
     const grid = opsGridRef.current;
@@ -5658,30 +5176,42 @@ export default function App() {
     async function load() {
       setInitialLoading(true);
       setInitialError(null);
+      setMemoryLoadWarning(null);
+
+      const incidentsPromise = fetchJsonEndpoint("/api/memory/incidents").then(
+        (value) => ({ status: "fulfilled", value }),
+        (reason) => ({ status: "rejected", reason }),
+      );
+      const auditPromise = fetchJsonEndpoint("/api/memory/audit").then(
+        (value) => ({ status: "fulfilled", value }),
+        (reason) => ({ status: "rejected", reason }),
+      );
 
       try {
-        const [incidentsRes, servicesRes, auditRes] = await Promise.all([
-          fetch("/api/memory/incidents"),
-          fetch("/api/services"),
-          fetch("/api/memory/audit"),
-        ]);
-
-        if (!incidentsRes.ok || !servicesRes.ok || !auditRes.ok) {
-          throw new Error("Failed to load Garage Admin context");
-        }
-
-        const incidentsData = await incidentsRes.json();
-        const servicesData = await servicesRes.json();
-        const auditData = await auditRes.json();
-        const incidentItems = normalizeObjectCollection(incidentsData.items);
+        const servicesData = await fetchJsonEndpoint("/api/services", { requireOkFlag: true });
         applyServicePayload(servicesData);
+        setInitialLoading(false);
+
+        const [incidentsResult, auditResult] = await Promise.all([incidentsPromise, auditPromise]);
+        const incidentItems =
+          incidentsResult.status === "fulfilled" ? normalizeObjectCollection(incidentsResult.value.items) : [];
+        const auditItems = auditResult.status === "fulfilled" ? normalizeObjectCollection(auditResult.value.items) : [];
+        const memoryWarnings = [
+          describeSettledFailure("/api/memory/incidents", incidentsResult),
+          describeSettledFailure("/api/memory/audit", auditResult),
+        ].filter(Boolean);
 
         setIncidents(incidentItems);
-        setAudit(normalizeObjectCollection(auditData.items));
+        setAudit(auditItems);
+        setMemoryLoadWarning(
+          memoryWarnings.length
+            ? `Services are shown, but ${memoryWarnings.join(" ")}`
+            : null,
+        );
       } catch (error) {
-        setInitialError(error.message);
-      } finally {
+        setInitialError(error?.message || "Failed to load Garage Admin context");
         setInitialLoading(false);
+        await Promise.all([incidentsPromise, auditPromise]);
       }
     }
 
@@ -5703,12 +5233,7 @@ export default function App() {
   }
 
   async function refreshServices() {
-    const servicesRes = await fetch("/api/services");
-    const servicesData = await servicesRes.json();
-
-    if (!servicesRes.ok || !servicesData.ok) {
-      throw new Error(servicesData.error || "Failed to refresh services");
-    }
+    const servicesData = await fetchJsonEndpoint("/api/services", { requireOkFlag: true });
 
     return applyServicePayload(servicesData);
   }
@@ -5745,15 +5270,15 @@ export default function App() {
     setAuditError(null);
 
     try {
-      const auditRes = await fetch("/api/memory/audit");
-      if (!auditRes.ok) {
-        throw new Error("Failed to refresh audit");
-      }
-
-      const auditData = await auditRes.json();
+      const auditData = await fetchJsonEndpoint("/api/memory/audit");
       setAudit(normalizeObjectCollection(auditData.items));
+
+      const degradedMessage = describeMemoryDegradation("/api/memory/audit", auditData);
+      if (degradedMessage) {
+        setAuditError(degradedMessage);
+      }
     } catch (error) {
-      setAuditError(error.message);
+      setAuditError(error?.message || "Failed to refresh audit");
       throw error;
     } finally {
       setAuditLoading(false);
@@ -5765,28 +5290,12 @@ export default function App() {
   const auditItems = normalizeObjectCollection(audit);
   const logsArchiveItems = normalizeObjectCollection(logsArchive);
   const expandedAuditItemIds = normalizeStringArray(expandedAuditIds);
-  const chatMessages = normalizeObjectCollection(messages);
-  const assistantResponseCount = chatMessages.filter((message) => message.role !== "user").length;
-  const assistantLookupItems = [...chatMessages]
-    .reverse()
-    .flatMap((message) => normalizeObjectCollection(message.lookup?.items));
-  const selectedAssistantLookupItem =
-    assistantLookupItems.find((item) => isLookupItemSelected(item, assistantSelection)) || null;
   const selectedIncident = incidentItems.find((incident) => incident.id === selectedIncidentId) || null;
   const selectedServiceRecord = serviceItems.find((service) => service.name === selectedService) || null;
   const serviceInventoryFreshness = describeInventoryFreshness(serviceInventorySnapshot, {
     services: serviceItems,
     now: Date.now(),
   });
-
-  useEffect(() => {
-    if (assistantMode !== ASSISTANT_MODES.MINIMIZED) {
-      setAssistantSeenResponseCount(assistantResponseCount);
-      return;
-    }
-
-    setAssistantSeenResponseCount((current) => Math.min(current, assistantResponseCount));
-  }, [assistantMode, assistantResponseCount]);
 
   function getApprovalContextForAction(actionType, actionRecord, serviceRecord, dependencyRollup = null) {
     return buildActionApprovalContext({
@@ -5915,16 +5424,6 @@ export default function App() {
       controller.abort();
     };
   }, [selectedService, selectedServiceRecord]);
-
-  useEffect(() => {
-    chatRequestIdRef.current += 1;
-    setMessages([]);
-    setAssistantSelection(null);
-    setActiveAssistantPlanChipId("");
-    setInput("");
-    setChatError(null);
-    setChatLoading(false);
-  }, [selectedService]);
 
   function handleServiceSelect(serviceName) {
     setSelectedService(serviceName);
@@ -6763,67 +6262,6 @@ export default function App() {
       ? diagnosis.likelyCause
       : "Review raw logs or run a health check for more context.";
   const dependencyHealthRollup = buildDependencyHealthRollup(selectedServiceRecord, serviceItems, diagnosis);
-  const assistantContext = buildAssistantContext({
-    selectedService,
-    selectedServiceRecord: selectedServiceRecord
-      ? {
-          ...selectedServiceRecord,
-          runtimeSummary: selectedServiceRuntimeSummary,
-        }
-      : null,
-    services: serviceItems,
-    diagnosis,
-    diagnosisLogEvents,
-    logSummary: {
-      hasLogs,
-      logsFetchedAt,
-      lineCount: logLineCount,
-      visibleLineCount: visibleLogLines.length,
-      filtered: hasActiveLogFilter,
-      alertOnly: logAlertOnly,
-      alertCount: logSignals.alertCount,
-      criticalCount: logSignals.critical,
-      errorCount: logSignals.errors,
-      warningCount: logSignals.warnings,
-      summary: logSignals.summary,
-    },
-    inventoryFreshness: serviceInventoryFreshness,
-    dependencyRollup: dependencyHealthRollup,
-    approvalContext: restartApprovalContext,
-    restartRiskProfile,
-    latestAction: latestDiagnosisAction
-      ? {
-          type: latestDiagnosisActionType,
-          status: latestDiagnosisAction.action?.status || latestDiagnosisAction.status || "unknown",
-          summary: latestDiagnosisActionText,
-          createdAt: latestDiagnosisActionCreatedAt,
-          riskLabel: latestDiagnosisActionRiskProfile?.label || "",
-          riskLevel: latestDiagnosisActionRiskProfile?.riskLevel || "",
-          verificationSummary: getVerificationSummary(getActionResult(latestDiagnosisAction)),
-        }
-      : null,
-    capabilities: {
-      logs: selectedServiceLogsCapability,
-      health: selectedServiceHealthCapability,
-      restart: selectedServiceRestartCapability,
-    },
-      selectedIncident,
-  });
-  const assistantPlanCards = buildAssistantPlanCards({
-    activePlanChipId: activeAssistantPlanChipId,
-    assistantContext,
-    restartApprovalContext,
-    restartRiskProfile,
-    auditEntries: selectedService ? selectedServiceAudit : visibleAudit,
-    lookupItems: assistantLookupItems,
-    selectedLookupItem: selectedAssistantLookupItem,
-    healthOutput,
-    healthMeta,
-  });
-  const assistantToneMeta = getAssistantToneMeta(assistantTone);
-  const assistantDisplayContext = formatAssistantContextForTone(assistantContext, assistantTone);
-  const assistantDisplayPlanCards = assistantPlanCards.map((card) => formatAssistantPlanCardForTone(card, assistantTone));
-  const assistantDisplayMessages = chatMessages.map((message) => formatAssistantMessageForTone(message, assistantTone));
   const extractedEventsEmptyMessage = !selectedService
     ? "Select a service to review extracted log events."
     : "No critical issue detected from the current logs. Review raw logs or run a health check for more context.";
@@ -7003,599 +6441,9 @@ export default function App() {
     setHealthDisposition({ type: "cleared", at: new Date().toISOString() });
   }
 
-  function appendAssistantContent(content) {
-    setMessages((current) => [
-      ...normalizeObjectCollection(current),
-      {
-        id: createId(),
-        role: "assistant",
-        content,
-      },
-    ]);
-  }
-
-  async function submitChatMessage(messageText, options = {}) {
-    const trimmed = messageText.trim();
-
-    if (!trimmed || chatLoading) {
-      return;
-    }
-
-    const requestId = ++chatRequestIdRef.current;
-
-    const userMessage = {
-      id: createId(),
-      role: "user",
-      content: trimmed,
-    };
-
-    setMessages((current) => [...normalizeObjectCollection(current), userMessage]);
-    setInput("");
-    setChatLoading(true);
-    setChatError(null);
-
-    try {
-      const response = await fetch("/api/chat/plan", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(
-          buildAssistantRequestPayload({
-            message: trimmed,
-            context: assistantContext,
-            lookupRequest: options.lookupRequest || null,
-          }),
-        ),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok || !data.ok) {
-        throw new Error(data.error || "Failed to analyze context");
-      }
-
-      if (requestId !== chatRequestIdRef.current) {
-        return;
-      }
-
-      const lookupItems = normalizeObjectCollection(data.lookup?.items);
-
-      if (!assistantSelection && lookupItems.length === 1) {
-        setAssistantSelection(createAssistantSelection(lookupItems[0]));
-      }
-
-      setMessages((current) => [
-        ...normalizeObjectCollection(current),
-        {
-          id: createId(),
-          role: "assistant",
-          summary: data.summary,
-          suggestions: data.suggestions || [],
-          proposedAction: data.proposedAction || null,
-          lookup: data.lookup || null,
-        },
-      ]);
-    } catch (error) {
-      if (requestId !== chatRequestIdRef.current) {
-        return;
-      }
-
-      setChatError(error.message);
-      setMessages((current) => [
-        ...normalizeObjectCollection(current),
-        {
-          id: createId(),
-          role: "assistant",
-          content: `Chat analysis failed: ${error.message}`,
-        },
-      ]);
-    } finally {
-      if (requestId === chatRequestIdRef.current) {
-        setChatLoading(false);
-      }
-    }
-  }
-
-  async function handleChatSubmit(event) {
-    event.preventDefault();
-    await submitChatMessage(input);
-  }
-
-  function handleQuickPrompt(prompt) {
-    submitChatMessage(prompt).catch(() => {});
-  }
-
-  async function runChatKitProbe(kind) {
-    if (chatkitLoading) {
-      return;
-    }
-
-    const endpoint = kind === "proof" ? "/api/chatkit/proof-of-life" : "/api/chatkit/status";
-    const label = kind === "proof" ? "Proof of life" : "Status";
-
-    setChatkitLoading(true);
-    setChatkitError(null);
-
-    try {
-      const response = await fetch(endpoint, {
-        method: kind === "proof" ? "POST" : "GET",
-        headers: {
-          Accept: "application/json",
-        },
-      });
-      const data = await response.json();
-
-      if (!response.ok || data?.ok !== true) {
-        throw new Error(data?.error?.message || data?.error || `${label} check failed`);
-      }
-
-      setChatkitStatus(data);
-      setChatkitResult({
-        ...data,
-        checkedAt: new Date().toISOString(),
-        label,
-      });
-    } catch (error) {
-      setChatkitError(error.message || `${label} check failed`);
-    } finally {
-      setChatkitLoading(false);
-    }
-  }
-
-  function handleAssistantPlanChip(chipId) {
-    setActiveAssistantPlanChipId((current) => (current === chipId ? "" : chipId));
-  }
-
-  function handleAssistantLookupAction(actionId, overrides = {}) {
-    const invocation = buildAssistantLookupInvocation(actionId, {
-      input,
-      selection: assistantSelection,
-      selectedService,
-      ...overrides,
-    });
-
-    if (invocation.error) {
-      setChatError(invocation.error);
-      appendAssistantContent(invocation.error);
-      return;
-    }
-
-    submitChatMessage(invocation.message, {
-      lookupRequest: invocation.lookupRequest,
-    }).catch(() => {});
-  }
-
-  function handleSelectAssistantItem(item) {
-    const selection = createAssistantSelection(item);
-
-    setAssistantSelection(selection);
-
-    if (!input.trim()) {
-      setInput(selection.relativePath || selection.title || selection.serviceName || "");
-    }
-  }
-
-  function handlePreviewAssistantItem(item) {
-    handleSelectAssistantItem(item);
-    handleAssistantLookupAction("read-file", {
-      title: item.title,
-      path: item.path,
-      reportId: item.reportId,
-    });
-  }
-
-  function handleExplainAssistantItem(item) {
-    handleSelectAssistantItem(item);
-    handleAssistantLookupAction("explain-report", {
-      title: item.title,
-      query: item.title,
-      reportId: item.reportId,
-    });
-  }
-
-  function runAssistantPlanAction(action, event) {
-    event?.stopPropagation?.();
-
-    if (!action || typeof action !== "object") {
-      return;
-    }
-
-    if (action.serviceName && action.serviceName !== selectedService) {
-      setSelectedService(action.serviceName);
-    }
-
-    if (action.id === "refresh-inventory") {
-      handleRefreshInventory(event);
-      return;
-    }
-
-    if (action.id === "open-service-actions") {
-      setShowRestartForm(true);
-      setRestartError(null);
-      return;
-    }
-
-    if (action.id === "query-logs") {
-      handleAssistantLookupAction("logs-query", {
-        service: action.serviceName || selectedService,
-      });
-      return;
-    }
-
-    if (action.id === "find-report") {
-      handleAssistantLookupAction("reports", {
-        input: action.query || "",
-        title: action.query || "",
-      });
-      return;
-    }
-
-    if (action.id === "search-files") {
-      handleAssistantLookupAction("search-files", {
-        input: action.query || "",
-      });
-      return;
-    }
-
-    if ((action.id === "open-report-preview" || action.id === "open-safe-file-preview") && action.item) {
-      handlePreviewAssistantItem(action.item);
-    }
-  }
-
-  function applySuggestedAction(proposedAction) {
-    if (!proposedAction || proposedAction.type !== "restart-service") {
-      return;
-    }
-
-    setSelectedService(proposedAction.serviceName);
-    setShowRestartForm(true);
-    setRestartError(null);
-    setRestartResult(null);
-    setRestartForm((current) => ({
-      ...current,
-      reason: proposedAction.reason || "",
-    }));
-  }
-
-  function handleOpenAssistantExpanded() {
-    setAssistantMode(ASSISTANT_MODES.EXPANDED);
-  }
-
-  function handleDockAssistant() {
-    setAssistantMode(ASSISTANT_MODES.DOCKED);
-  }
-
-  function handleMinimizeAssistant() {
-    setAssistantMode(ASSISTANT_MODES.MINIMIZED);
-  }
-
-  function handleCloseAssistant() {
-    setAssistantSeenResponseCount(assistantResponseCount);
-    setAssistantMode(ASSISTANT_MODES.MINIMIZED);
-  }
-
-  function handleCycleAssistantLauncherPosition() {
-    setAssistantLauncherPosition((current) => getNextAssistantLauncherPosition(current));
-  }
-
-  const isAssistantMinimized = assistantMode === ASSISTANT_MODES.MINIMIZED;
-  const isAssistantDocked = assistantMode === ASSISTANT_MODES.DOCKED;
-  const isAssistantExpanded = assistantMode === ASSISTANT_MODES.EXPANDED;
-  const assistantUnreadCount =
-    assistantMode === ASSISTANT_MODES.MINIMIZED ? Math.max(0, assistantResponseCount - assistantSeenResponseCount) : 0;
-  const assistantServiceLabel = selectedServiceRecord?.displayName || selectedServiceRecord?.name || selectedService || "";
-  const assistantHostOwnershipLabel = formatAssistantHostOwnership(selectedServiceRecord?.host || assistantContext?.service?.host);
-  const assistantSafetyText = formatAssistantText(
-    "Read-only chat only. Chat cannot execute restarts, approvals, file writes, or destructive actions.",
-    {
-      tone: assistantTone,
-      category: "safety",
-      riskLevel: "dangerous",
-      surface: "safety",
-    },
-  );
-  const assistantNeedsAttention =
-    Boolean(chatError) ||
-    restartApprovalContext?.gate?.blockedUntilRefresh === true ||
-    ["stale", "unknown"].includes(String(assistantContext?.inventory?.freshness?.bucket || "").toLowerCase()) ||
-    assistantLookupItems.some((item) => lookupText(item?.safetyStatus).toLowerCase() === "blocked");
-  const assistantAttentionState = buildAssistantAttentionState({
-    hasSelectedService: Boolean(selectedService),
-    unreadCount: assistantUnreadCount,
-    diagnosisDetected: assistantContext?.diagnosis?.detected === true,
-    needsAttention: assistantNeedsAttention,
-  });
-  const assistantLauncherSummary = assistantAttentionState.summary;
-  const assistantLauncherPositionMeta =
-    ASSISTANT_LAUNCHER_POSITION_META[assistantLauncherPosition] ||
-    ASSISTANT_LAUNCHER_POSITION_META[ASSISTANT_LAUNCHER_POSITIONS.RIGHT_CENTER];
-  const assistantLauncherNextPosition = getNextAssistantLauncherPosition(assistantLauncherPosition);
-  const assistantLauncherNextPositionMeta =
-    ASSISTANT_LAUNCHER_POSITION_META[assistantLauncherNextPosition] ||
-    ASSISTANT_LAUNCHER_POSITION_META[ASSISTANT_LAUNCHER_POSITIONS.RIGHT_CENTER];
-  const assistantLauncherNotificationBadge =
-    assistantUnreadCount > 0
-      ? {
-          className: "assistant-launcher-badge-unread",
-          label: assistantUnreadCount > 99 ? "99+" : String(assistantUnreadCount),
-          title: assistantUnreadCount === 1 ? "1 unread assistant response" : `${assistantUnreadCount} unread assistant responses`,
-        }
-      : assistantNeedsAttention
-        ? {
-            className: "assistant-launcher-badge-alert",
-            label: "!",
-            title: "Assistant context needs attention",
-          }
-        : null;
-  const showAssistantContextBadge = Boolean(assistantServiceLabel) && !assistantLauncherNotificationBadge;
-  const assistantLauncherTooltip = [
-    assistantServiceLabel ? `Selected service: ${assistantServiceLabel}` : "No service selected",
-    assistantHostOwnershipLabel ? `Host: ${assistantHostOwnershipLabel}` : "",
-    assistantLauncherSummary,
-  ]
-    .filter(Boolean)
-    .join(" Â· ");
-  const assistantLauncherAriaLabel = [
-    "Open assistant",
-    assistantServiceLabel ? `selected service ${assistantServiceLabel}` : "no service selected",
-    assistantAttentionState.labels.length ? assistantAttentionState.labels.join(", ") : "ready when needed",
-  ].join(". ") + ".";
-  const assistantEmptyStateText = formatAssistantText(
-    selectedService
-      ? "Ask one of the quick prompts or type a question grounded in the selected service."
-      : "Select a service first, then ask a grounded question about its status, logs, or plan.",
-    {
-      tone: assistantTone,
-      category: selectedService ? "empty-state" : "no-service",
-      surface: "empty-state",
-    },
-  );
-  const assistantLoadingText = formatAssistantText("Analyzing current context...", {
-    tone: assistantTone,
-    surface: "loading",
-  });
-  const assistantPanelContent = (
-    <section
-      className={`chat-panel assistant-panel-window ${
-        isAssistantExpanded ? "assistant-panel-window-expanded" : "assistant-panel-window-docked"
-      }`}
-      role={isAssistantExpanded ? "dialog" : "complementary"}
-      aria-modal={isAssistantExpanded ? "true" : undefined}
-      aria-label="Assistant"
-    >
-      <div className="chat-header assistant-window-header">
-        <div className="assistant-window-heading">
-          <span className="section-title">Assistant</span>
-          <div className="assistant-window-title-row">
-            <h2>Context Chat</h2>
-            {chatLoading ? <span className="count-pill">Analyzing</span> : null}
-          </div>
-          <div
-            className={`assistant-window-context-row ${
-              assistantServiceLabel ? "" : "assistant-window-context-row-muted"
-            }`}
-          >
-            {assistantServiceLabel ? <strong>{assistantServiceLabel}</strong> : <span>No service selected</span>}
-            {assistantServiceLabel ? (
-              <span className={`status-badge ${statusClassName(selectedServiceStatus)}`} title={selectedServiceStatus}>
-                {formatStatusLabel(selectedServiceStatus)}
-              </span>
-            ) : null}
-            {assistantHostOwnershipLabel ? (
-              <span className="status-badge status-info">{assistantHostOwnershipLabel}</span>
-            ) : null}
-          </div>
-          <div className="assistant-tone-row">
-            <label className="assistant-tone-control">
-              <span className="detail-label">Tone</span>
-              <select
-                className="assistant-tone-select"
-                value={assistantTone}
-                onChange={(event) => setAssistantTone(normalizeAssistantTone(event.target.value))}
-                aria-label="Assistant tone"
-              >
-                {ASSISTANT_TONE_OPTIONS.map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <span className="status-badge status-info assistant-tone-indicator">{assistantToneMeta.label}</span>
-          </div>
-          <div className="assistant-tone-note">{ASSISTANT_TONE_HELPER_TEXT}</div>
-        </div>
-        <div className="assistant-window-controls">
-          {isAssistantExpanded ? (
-            <button type="button" className="mini-button assistant-window-control" onClick={handleDockAssistant}>
-              Dock
-            </button>
-          ) : (
-            <button type="button" className="mini-button assistant-window-control" onClick={handleOpenAssistantExpanded}>
-              Pop out
-            </button>
-          )}
-          <button type="button" className="mini-button assistant-window-control" onClick={handleMinimizeAssistant}>
-            Minimize
-          </button>
-          {isAssistantExpanded ? (
-            <button
-              type="button"
-              className="mini-button assistant-window-control assistant-window-control-close"
-              onClick={handleCloseAssistant}
-            >
-              Close
-            </button>
-          ) : null}
-        </div>
-      </div>
-      {isAssistantExpanded ? <div className="assistant-window-safety">{assistantSafetyText}</div> : null}
-      {chatError ? <div className="banner error-banner">Chat analysis failed: {chatError}</div> : null}
-      <div className="messages">
-        <div className="assistant-context-card">
-          <div className="assistant-context-header">
-            <span className="detail-label">Grounded Context</span>
-            <span
-              className={`status-badge signal-freshness-badge signal-freshness-badge-${
-                assistantContext.inventory.freshness.bucket || "unknown"
-              }`}
-              title={assistantContext.inventory.freshness.provenanceText || assistantContext.inventory.freshness.label}
-            >
-              {assistantContext.inventory.freshness.label}
-            </span>
-          </div>
-          <div className="assistant-context-summary">{assistantDisplayContext.openingMessage}</div>
-          {assistantContext.panelFacts.length ? (
-            <div className="assistant-context-facts">
-              {assistantContext.panelFacts.map((fact) => (
-                <span
-                  key={fact.key}
-                  className={`assistant-context-fact assistant-context-fact-${fact.tone || "neutral"}`}
-                  title={`${fact.label}: ${fact.value}`}
-                >
-                  <strong>{fact.label}:</strong> {fact.value}
-                </span>
-              ))}
-            </div>
-          ) : null}
-          <div className="assistant-context-section">
-            <div className="assistant-context-section-copy">
-              <span className="detail-label">Quick prompts</span>
-              <span className="assistant-context-section-note">Grounded in the selected service and current operator context.</span>
-            </div>
-            <div className="assistant-prompt-chips">
-              {assistantDisplayContext.quickPrompts.map((prompt) => (
-                <button
-                  key={prompt}
-                  type="button"
-                  className="assistant-prompt-chip"
-                  onClick={() => handleQuickPrompt(prompt)}
-                  disabled={chatLoading || !selectedService}
-                >
-                  {prompt}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="assistant-context-section">
-            <div className="assistant-context-section-copy">
-              <span className="detail-label">Operator plans</span>
-              <span className="assistant-context-section-note">Read-only planning only. Restart and approval paths stay inside Service Actions.</span>
-            </div>
-            <div className="assistant-plan-chip-row">
-              {ASSISTANT_PLAN_CHIPS.map((chip) => (
-                <button
-                  key={chip.id}
-                  type="button"
-                  className={`assistant-prompt-chip assistant-plan-chip ${
-                    activeAssistantPlanChipId === chip.id ? "assistant-plan-chip-active" : ""
-                  }`}
-                  onClick={() => handleAssistantPlanChip(chip.id)}
-                >
-                  {chip.label}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="assistant-context-section">
-            <div className="assistant-context-section-copy">
-              <span className="detail-label">Safe lookups</span>
-              <span className="assistant-context-section-note">Windows repo/docs, Fedora safe API surfaces, and registered cross-host docs only.</span>
-            </div>
-            <div className="assistant-lookup-chip-row">
-              {ASSISTANT_LOOKUP_CHIPS.map((chip) => (
-                <button
-                  key={chip.id}
-                  type="button"
-                  className="assistant-prompt-chip assistant-lookup-chip"
-                  onClick={() => handleAssistantLookupAction(chip.id)}
-                  disabled={chatLoading}
-                >
-                  {chip.label}
-                </button>
-              ))}
-            </div>
-          </div>
-          {assistantSelection ? (
-            <div className="inline-note assistant-selection-note">
-              Selected target: {assistantSelection.title || assistantSelection.relativePath || assistantSelection.serviceName || "None"}
-            </div>
-          ) : null}
-        </div>
-        <AssistantPlanCards cards={assistantDisplayPlanCards} onRunAction={runAssistantPlanAction} />
-        {!chatMessages.length && !chatLoading ? (
-          <div className="message system">{assistantEmptyStateText}</div>
-        ) : null}
-        {assistantDisplayMessages.map((m) => (
-          <div key={m.id} className={`message ${m.role}`}>
-            {m.content ? <div>{m.content}</div> : null}
-            {m.summary ? (
-              <div className="chat-plan">
-                <div className="chat-summary">
-                  <span className="detail-label">Summary</span>
-                  <div>{m.summary}</div>
-                </div>
-                {m.lookup ? (
-                  <div>
-                    <span className="detail-label">Lookup Results</span>
-                    <AssistantLookupResults
-                      lookup={m.lookup}
-                      selection={assistantSelection}
-                      onSelectItem={handleSelectAssistantItem}
-                      onPreviewItem={handlePreviewAssistantItem}
-                      onExplainItem={handleExplainAssistantItem}
-                    />
-                  </div>
-                ) : null}
-                <div>
-                  <span className="detail-label">Suggestions</span>
-                  <ul className="suggestion-list">
-                    {(Array.isArray(m.suggestions) ? m.suggestions : []).map((suggestion) => (
-                      <li key={suggestion}>{suggestion}</li>
-                    ))}
-                  </ul>
-                </div>
-                {m.proposedAction ? (
-                  <div className="suggested-action-card">
-                    <span className="detail-label">
-                      Suggested Action: Restart {m.proposedAction.serviceName || "selected service"}
-                    </span>
-                    <div>{m.proposedAction.reason || "No reason provided."}</div>
-                    <button
-                      type="button"
-                      className="secondary-button assistant-window-action-link"
-                      onClick={() => applySuggestedAction(m.proposedAction)}
-                    >
-                      Open in Actions Panel
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-          </div>
-        ))}
-        {chatLoading ? <div className="message system">{assistantLoadingText}</div> : null}
-      </div>
-
-      <form className="composer" onSubmit={handleChatSubmit}>
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Ask about diagnosis, logs, host ownership, reports, or safe file lookup..."
-        />
-        <button disabled={chatLoading}>{chatLoading ? "Analyzing..." : "Send"}</button>
-      </form>
-    </section>
-  );
-
   return (
     <>
-      <div
-        className={`app-shell ${isAssistantDocked ? "app-shell-assistant-docked" : "app-shell-assistant-collapsed"} ${
-          isAssistantMinimized ? "app-shell-assistant-minimized" : ""
-        }`}
-      >
+      <div className="app-shell">
       <aside className="sidebar">
         <div className="sidebar-header">
           <span className="eyebrow">Garage Admin V2</span>
@@ -7724,6 +6572,9 @@ export default function App() {
         {initialError ? (
           <div className="banner error-banner">Initial load failed: {initialError}</div>
         ) : null}
+        {!initialError && memoryLoadWarning ? (
+          <div className="banner warning-banner">Degraded memory context: {memoryLoadWarning}</div>
+        ) : null}
 
         <section className="workspace-header">
           <div className="workspace-title">
@@ -7752,6 +6603,9 @@ export default function App() {
               <span className={`count-pill incident-count-pill ${incidentItems.length ? "incident-count-pill-active" : ""}`}>
                 {incidentItems.length} incident{incidentItems.length === 1 ? "" : "s"}
               </span>
+              <a className="secondary-button" href="/agent">
+                Garage Agent
+              </a>
               <button type="button" className="layout-reset-button" onClick={handleResetLayout}>
                 Reset layout
               </button>
@@ -7761,6 +6615,9 @@ export default function App() {
               <span className={`count-pill incident-count-pill ${incidentItems.length ? "incident-count-pill-active" : ""}`}>
                 {incidentItems.length} incident{incidentItems.length === 1 ? "" : "s"}
               </span>
+              <a className="secondary-button" href="/agent">
+                Garage Agent
+              </a>
             </div>
           )}
         </section>
@@ -7826,156 +6683,14 @@ export default function App() {
             </section>
           ) : activeWorkspaceTab === "command-line" ? (
             <CommandLinePanel />
-          ) : activeWorkspaceTab === "assistant" ? (
-            <section className="workspace-tab-panel workspace-tab-panel--assistant">
-              <div className="workspace-tab-heading">
-                <span className="section-title">Assistant</span>
-                <h2>Assistant Workspace</h2>
-                <p>
-                  Use the assistant for grounded operator plans and explanations. Chat cannot execute restarts, approvals,
-                  file writes, destructive actions, or worker jobs.
-                </p>
-              </div>
-              <div className="workspace-tab-card-grid">
-                <article className="panel workspace-tab-card">
-                  <span className="detail-label">Current context</span>
-                  <h3>{selectedServiceRecord?.displayName || selectedService || "No service selected"}</h3>
-                  <p className="inline-note">
-                    {selectedServiceRecord
-                      ? selectedServiceHeaderSummary
-                      : "Select a service from the rail to ground assistant context."}
-                  </p>
-                  <div className="inline-badges">
-                    <span className={`status-badge ${statusClassName(selectedServiceStatus)}`}>
-                      {formatStatusLabel(selectedServiceStatus)}
-                    </span>
-                    <span className="status-badge status-info">{formatAssistantHostOwnership(selectedServiceRecord?.host) || "Host unknown"}</span>
-                  </div>
-                </article>
-                <article className="panel workspace-tab-card">
-                  <span className="detail-label">Assistant mode</span>
-                  <h3>{isAssistantExpanded ? "Expanded" : isAssistantDocked ? "Docked" : "Minimized"}</h3>
-                  <p className="inline-note">
-                    The expanded assistant keeps the dashboard available while giving chat more room for plans, lookup results, and evidence cards.
-                  </p>
-                  <div className="panel-actions">
-                    <button type="button" className="secondary-button" onClick={handleOpenAssistantExpanded}>
-                      Open Assistant
-                    </button>
-                    <button type="button" className="secondary-button" onClick={() => setAssistantMode(ASSISTANT_MODES.DOCKED)}>
-                      Dock Assistant
-                    </button>
-                  </div>
-                </article>
-              </div>
-              <section className="panel chatkit-proof-card" aria-labelledby="chatkit-proof-heading">
-                <div className="chatkit-proof-header">
-                  <div>
-                    <span className="detail-label">Experimental ChatKit</span>
-                    <h3 id="chatkit-proof-heading">Hosted Session</h3>
-                  </div>
-                  <span className={`status-badge ${getChatKitModeBadgeClass(chatkitStatus?.mode)}`}>
-                    {formatChatKitModeLabel(chatkitStatus?.mode)}
-                  </span>
-                </div>
-                <p className="inline-note">
-                  Experimental ChatKit stays separate from Service Actions. It cannot restart, approve, write, run shell,
-                  call workers, or bypass Service Actions.
-                </p>
-                <ChatKitPanel
-                  status={chatkitStatus}
-                  selectedServiceLabel={selectedServiceRecord?.displayName || selectedService || ""}
-                />
-                <div className="chatkit-proof-divider" />
-                <div className="chatkit-proof-diagnostics">
-                  <span className="detail-label">Readiness diagnostics</span>
-                  <p className="inline-note">
-                    Keep the existing local proof-of-life and status checks as fallback diagnostics while the hosted session
-                    integration settles.
-                  </p>
-                </div>
-                <div className="panel-actions">
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    onClick={() => runChatKitProbe("status")}
-                    disabled={chatkitLoading}
-                  >
-                    {chatkitLoading ? "Checking..." : "Check status"}
-                  </button>
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    onClick={() => runChatKitProbe("proof")}
-                    disabled={chatkitLoading}
-                  >
-                    {chatkitLoading ? "Checking..." : "Proof of life"}
-                  </button>
-                </div>
-                {chatkitError ? <div className="banner error-banner">ChatKit prep check failed: {chatkitError}</div> : null}
-                {chatkitResult ? (
-                  <div className="chatkit-proof-result">
-                    <div className="detail-grid">
-                      <div className="detail-item">
-                        <span className="detail-label">Check</span>
-                        <span className="detail-value">{chatkitResult.label}</span>
-                      </div>
-                      <div className="detail-item">
-                        <span className="detail-label">Status</span>
-                        <span className="detail-value">{chatkitResult.status || "unknown"}</span>
-                      </div>
-                      <div className="detail-item">
-                        <span className="detail-label">Mode</span>
-                        <span className="detail-value">{chatkitResult.mode || "prep"}</span>
-                      </div>
-                      <div className="detail-item">
-                        <span className="detail-label">Availability</span>
-                        <span className="detail-value">{chatkitResult.availability || "unavailable"}</span>
-                      </div>
-                      <div className="detail-item">
-                        <span className="detail-label">Checked</span>
-                        <span className="detail-value">{formatCreatedAt(chatkitResult.checkedAt)}</span>
-                      </div>
-                    </div>
-                    {chatkitResult.reason ? <p className="inline-note chatkit-proof-message">{chatkitResult.reason}</p> : null}
-                    {chatkitResult.proofOfLife?.message ? (
-                      <p className="inline-note chatkit-proof-message">{chatkitResult.proofOfLife.message}</p>
-                    ) : null}
-                    {chatkitResult.error ? (
-                      <p className="known-failure">
-                        {chatkitResult.error.code}: {chatkitResult.error.message}
-                      </p>
-                    ) : null}
-                    <div className="assistant-context-facts">
-                      <span className="assistant-context-fact">
-                        <strong>Experiment:</strong>{" "}
-                        {chatkitResult.configured?.experimentEnabled ? "enabled" : "disabled"}
-                      </span>
-                      <span className="assistant-context-fact">
-                        <strong>OpenAI key:</strong>{" "}
-                        {chatkitResult.configured?.openaiApiKeyConfigured ? "configured server-side" : "not configured"}
-                      </span>
-                      <span className="assistant-context-fact">
-                        <strong>Workflow:</strong>{" "}
-                        {chatkitResult.configured?.workflowConfigured ? "configured server-side" : "not configured"}
-                      </span>
-                      <span className="assistant-context-fact">
-                        <strong>Missing:</strong>{" "}
-                        {Array.isArray(chatkitResult.missingConfig) && chatkitResult.missingConfig.length
-                          ? chatkitResult.missingConfig.join(", ")
-                          : "none"}
-                      </span>
-                    </div>
-                  </div>
-                ) : null}
-              </section>
-            </section>
+          ) : (activeWorkspaceTab === "contact-inbox" || activeWorkspaceTab === "patch-proposals") ? (
+            activeWorkspaceTab === "patch-proposals" ? <PatchProposalsPanel /> : <ContactInboxPanel />
           ) : (
           <SelectedServiceWorkspaceBoundary
             resetKey={`${selectedService || "none"}-${selectedServiceRecord?.lastSeen || "na"}`}
             serviceName={selectedServiceRecord?.displayName || selectedService || ""}
           >
-          <div className={`workspace-columns workspace-columns-tab-${activeWorkspaceTab} ${isAssistantMinimized ? "workspace-columns-assistant-minimized" : ""}`}>
+          <div className={`workspace-columns workspace-columns-tab-${activeWorkspaceTab}`}>
             <div className="workspace-main-column">
           {selectedServiceRecord ? (
             <DisclosureSection
@@ -8354,7 +7069,7 @@ export default function App() {
 
             <div className="workspace-side-column">
               <section
-                className={`ops-grid ${isAssistantMinimized ? "ops-grid-assistant-minimized" : ""}`}
+                className="ops-grid"
                 ref={opsGridRef}
                 style={{
                   "--right-top-track": `${rightPanelSplit}fr`,
@@ -8940,54 +7655,7 @@ export default function App() {
         </div>
       </main>
 
-        {isAssistantDocked ? assistantPanelContent : null}
       </div>
-      {isAssistantExpanded ? (
-        <div className="assistant-overlay" aria-hidden="false">
-          <div className="assistant-overlay-backdrop" />
-          <div className="assistant-overlay-panel">{assistantPanelContent}</div>
-        </div>
-      ) : null}
-      {!isAssistantDocked && !isAssistantExpanded ? (
-        <div className={`assistant-launcher-cluster assistant-launcher-cluster-${assistantLauncherPosition}`}>
-          <button
-            type="button"
-            className={`assistant-launcher ${assistantNeedsAttention ? "assistant-launcher-attention" : ""}`}
-            onClick={handleOpenAssistantExpanded}
-            aria-label={assistantLauncherAriaLabel}
-            title={assistantLauncherTooltip}
-          >
-            <span className="assistant-launcher-mark" aria-hidden="true">
-              AI
-            </span>
-            <span className="assistant-launcher-label">Assistant</span>
-            <span className="assistant-launcher-status">
-              {showAssistantContextBadge ? (
-                <span className="assistant-launcher-badge assistant-launcher-badge-context" title={assistantLauncherTooltip}>
-                  CTX
-                </span>
-              ) : null}
-              {assistantLauncherNotificationBadge ? (
-                <span
-                  className={`assistant-launcher-badge ${assistantLauncherNotificationBadge.className}`}
-                  title={assistantLauncherNotificationBadge.title}
-                >
-                  {assistantLauncherNotificationBadge.label}
-                </span>
-              ) : null}
-            </span>
-          </button>
-          <button
-            type="button"
-            className="assistant-launcher-position"
-            onClick={handleCycleAssistantLauncherPosition}
-            aria-label={`Move assistant launcher. Current position ${assistantLauncherPositionMeta.label}. Next position ${assistantLauncherNextPositionMeta.label}.`}
-            title={`Launcher position: ${assistantLauncherPositionMeta.label}. Click to move to ${assistantLauncherNextPositionMeta.label}.`}
-          >
-            {assistantLauncherPositionMeta.shortLabel}
-          </button>
-        </div>
-      ) : null}
     </>
   );
 }

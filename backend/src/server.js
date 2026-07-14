@@ -13,9 +13,13 @@ const serviceRoutes = require("./routes/services");
 const actionRoutes = require("./routes/actions");
 const chatRoutes = require("./routes/chat");
 const chatkitRoutes = require("./routes/chatkit");
+const chatkitCustomAgentRoutes = require("./routes/chatkitCustomAgent");
+const agentPageRoutes = require("./routes/agentPage");
 const assistantRoutes = require("./routes/assistant");
 const workerRoutes = require("./routes/workers");
 const commandLineRoutes = require("./routes/commandLine");
+const contactInboxRoutes = require("./routes/contactInbox");
+const websiteContactMessages = require("./routes/websiteContactMessages");
 
 const app = express();
 const frontendDistPath = path.resolve(__dirname, "../../frontend/dist");
@@ -23,6 +27,32 @@ const frontendIndexPath = path.join(frontendDistPath, "index.html");
 
 function isFrontendDistReady() {
   return fs.existsSync(frontendIndexPath);
+}
+
+function injectGarageAgentLink(html) {
+  if (typeof html !== "string" || html.includes('href="/agent"')) {
+    return html;
+  }
+
+  const linkMarkup =
+    '<a id="garage-agent-dashboard-link" href="/agent" style="position:fixed;right:18px;bottom:18px;z-index:9999;border:1px solid rgba(125,183,224,.45);border-radius:999px;background:#111827;color:#e6edf5;padding:9px 13px;font:600 13px \'Segoe UI\',Tahoma,Geneva,Verdana,sans-serif;text-decoration:none;box-shadow:0 10px 30px rgba(0,0,0,.35);">Garage Agent</a>';
+
+  if (html.includes("</body>")) {
+    return html.replace("</body>", `    ${linkMarkup}\n  </body>`);
+  }
+
+  return `${html}\n${linkMarkup}`;
+}
+
+function sendFrontendIndex(req, res) {
+  if (!isFrontendDistReady()) {
+    return res.status(503).json({
+      error: "Frontend build is missing. Run npm run build before production start.",
+    });
+  }
+
+  const html = fs.readFileSync(frontendIndexPath, "utf8");
+  res.type("html").send(injectGarageAgentLink(html));
 }
 
 app.use(helmet({ contentSecurityPolicy: false }));
@@ -49,9 +79,15 @@ app.use("/api/services", serviceRoutes);
 app.use("/api/actions", actionRoutes);
 app.use("/api/chat", chatRoutes);
 app.use("/api/chatkit", chatkitRoutes);
+app.use("/api/chatkit/custom-agent", chatkitCustomAgentRoutes);
 app.use("/api/assistant", assistantRoutes);
 app.use("/api/workers", workerRoutes);
 app.use("/api/command-line", commandLineRoutes);
+app.use("/api/contact-inbox", contactInboxRoutes);
+app.use("/api/website/contact-messages", websiteContactMessages.router);
+app.get("/contact-inbox", websiteContactMessages.renderContactInboxPage);
+app.use(agentPageRoutes);
+app.get("/", sendFrontendIndex);
 
 app.use(express.static(frontendDistPath));
 
@@ -60,13 +96,7 @@ app.get("*", (req, res, next) => {
     return next();
   }
 
-  if (!isFrontendDistReady()) {
-    return res.status(503).json({
-      error: "Frontend build is missing. Run npm run build before production start.",
-    });
-  }
-
-  return res.sendFile(frontendIndexPath);
+  return sendFrontendIndex(req, res);
 });
 
 app.use((error, _req, res, _next) => {

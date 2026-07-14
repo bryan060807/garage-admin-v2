@@ -75,7 +75,7 @@ Add a controlled command-launcher surface inside Garage Admin V2 that lets opera
 
 ## Live Runtime Only
 
-- The currently running PM2 instance at `http://127.0.0.1:4010` has not been restarted as part of this verification pass.
+- The currently running PM2 instance at `http://127.0.0.1:3010` has not been restarted as part of this verification pass.
 - Live route probes against `/api/command-line/actions` and `/api/command-line/run` still depend on the running PM2 process serving the new code.
 - Live Windows bridge and Fedora worker command results still depend on runtime env/auth state and worker availability.
 
@@ -86,7 +86,7 @@ Run these after a PM2 restart only if the running `garage-admin-v2` process has 
 PowerShell:
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:4010/api/command-line/actions | ConvertTo-Json -Depth 8
+Invoke-RestMethod http://127.0.0.1:3010/api/command-line/actions | ConvertTo-Json -Depth 8
 ```
 
 ```powershell
@@ -95,7 +95,7 @@ $body = @{
   params = @{}
 } | ConvertTo-Json -Depth 8
 
-Invoke-RestMethod http://127.0.0.1:4010/api/command-line/run `
+Invoke-RestMethod http://127.0.0.1:3010/api/command-line/run `
   -Method Post `
   -ContentType "application/json" `
   -Body $body | ConvertTo-Json -Depth 10
@@ -104,11 +104,11 @@ Invoke-RestMethod http://127.0.0.1:4010/api/command-line/run `
 `curl.exe`:
 
 ```bash
-curl.exe http://127.0.0.1:4010/api/command-line/actions
+curl.exe http://127.0.0.1:3010/api/command-line/actions
 ```
 
 ```bash
-curl.exe -X POST http://127.0.0.1:4010/api/command-line/run ^
+curl.exe -X POST http://127.0.0.1:3010/api/command-line/run ^
   -H "Content-Type: application/json" ^
   -d "{\"actionId\":\"windows.garage-admin.health\",\"params\":{}}"
 ```
