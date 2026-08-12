@@ -24,7 +24,7 @@
     "db:schema": "node backend/scripts/apply-schema.js"
   },
   "devDependencies": {
-    "concurrently": "^9.1.2"
+    "concurrently": "^9.2.4"
   },
   "dependencies": {
     "@modelcontextprotocol/server-filesystem": "^2026.1.14"
